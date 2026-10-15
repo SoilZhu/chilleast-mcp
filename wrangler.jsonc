@@ -1,0 +1,54 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "chilleast-mcp",
+  "main": "src/index.ts",
+  // 只保留自定义域名：关掉 *.workers.dev 与预览地址，避免出现计划外的公开入口
+  "workers_dev": false,
+  "preview_urls": false,
+  "compatibility_date": "2025-09-01",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SessionStore"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["OAuthStore"]
+    },
+    {
+      "tag": "v3",
+      "deleted_classes": ["SessionStore", "OAuthStore"]
+    }
+  ],
+  // 纯无状态中转网关：服务端完全不持久化存储用户账号、密码与 Cookie，无需 Durable Object 或数据库。
+  // 敏感值一律用 `wrangler secret put`，不写进本文件：
+  //   wrangler secret put SESSION_KEY       # 临时授权码加密密钥(base64, 32B)
+  //   wrangler secret put ACCOUNT_PEPPER    # 凭据指纹的 HMAC 密钥(base64, 32B)
+  //   wrangler secret put TURNSTILE_SECRET  # 授权页验证码的服务端密钥
+  "vars": {
+    // sitekey 是公开信息（本来就会渲染进授权页 HTML），不是秘密。
+    // widget 在 Cloudflare 侧绑定域名：workers.dev 主机名 + localhost + 127.0.0.1。
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAFWS4a2GjZJuvNbT"
+  },
+  // 授权接口的洪水防护。注意它的能力边界：period 只有 10/60 秒两档，
+  // 且按 colo 最终一致 —— 只能挡洪水，精确锁定在 OAuthStore 里做。
+  "ratelimits": [
+    {
+      "name": "LOGIN_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    }
+  ],
+  // 自定义域名（与 workers.dev 并存）。custom_domain 会由 Cloudflare 自动建好
+  // DNS 记录与证书；新域名必须同时加进 Turnstile widget 的域名列表，否则验证码失败。
+  "routes": [
+    { "pattern": "mcp.chilleast.soilzhu.su", "custom_domain": true }
+  ]
+}

@@ -1,0 +1,19 @@
+# 本地开发用（复制为 .dev.vars，切勿提交）
+#
+# 临时授权码加密密钥（32 字节，base64），用于 /authorize 与 /token 之间无状态传递 code：
+#   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+SESSION_KEY=
+
+# 凭据指纹的 HMAC 密钥（32 字节 base64）：
+#   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+ACCOUNT_PEPPER=
+
+# 授权页验证码。本地开发用 Turnstile 的"永远通过"测试密钥即可：
+#   sitekey: 1x00000000000000000000AA
+#   secret : 1x0000000000000000000000000000000AA
+# 线上要换成真实 widget 的密钥（sitekey 走 wrangler.jsonc 的 vars）。
+TURNSTILE_SITE_KEY=1x00000000000000000000AA
+TURNSTILE_SECRET=1x0000000000000000000000000000000AA
+
+# 可选：把 /mcp 之外的管理接口关掉（默认即关闭）
+# DEBUG_TOOLS=1
