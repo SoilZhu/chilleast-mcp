@@ -1,19 +1,14 @@
 /**
- * 超星通知查询 —— 直接用登录时拿到的 `.chaoxing.com` 会话 Cookie（UID）。
+ * 超星通知查询 —— 迁移至 api.chilleast.soilzhu.su/api/campus/notices*。
  * 对齐 ChillEast `NoticeService`。
- *
- * 这也是验证「登录链确实换到了超星身份」的最轻量工具：不需要任何额外换票。
  */
 
 import { textResult } from '../mcp/protocol';
 import type { ToolContext, ToolDefinition } from '../mcp/registry';
-import { SessionExpiredError, runWithSession } from '../auth/session-manager';
-import { DESKTOP_UA, HOSTS } from '../school/hunau/constants';
+import { SessionExpiredError } from '../auth/session-manager';
+import { callRelayApi } from '../api/client';
 
-const NOTICE_LIST_URL = `${HOSTS.chaoxingNotice}/pc/notice/getNoticeList`;
-const NOTICE_REFERER = `${HOSTS.chaoxingNotice}/pc/notice/myNotice`;
-
-interface RawNotice {
+export interface RawNotice {
   idCode?: unknown;
   content?: unknown;
   createrName?: unknown;
@@ -37,7 +32,6 @@ function toInt(value: unknown): number {
   return 0;
 }
 
-/** 通知标题：超星把标题放在 content 里，或者藏在附件字段里。 */
 function extractTitle(notice: RawNotice): string {
   const content = typeof notice.content === 'string' ? notice.content : '';
   const firstLine = content.split('\n').map((line) => line.trim()).find((line) => line !== '');
@@ -50,10 +44,19 @@ function extractTitle(notice: RawNotice): string {
       const name = parsed[0]?.['name'];
       if (typeof name === 'string') return name;
     } catch {
-      // 附件不是 JSON，忽略
+      // 忽略
     }
   }
   return '(无标题)';
+}
+
+function optionalCount(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 }
 
 export function normalizeNotice(notice: RawNotice): Record<string, unknown> {
@@ -70,25 +73,11 @@ export function normalizeNotice(notice: RawNotice): Record<string, unknown> {
     sender: typeof notice.createrName === 'string' ? notice.createrName : '',
     sentAt: `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`,
     isRead,
-    // ⚠️ count_all / count_read 是**这条通知的接收人数与已读人数**（全校维度），
-    // 不是「我的未读数」。已知某条通知是 34136，那是接收人数不是未读通知数。
-    // 所以原样给出两个计数，不再自己算一个会被误读的 "unreadCount"。
     ...(rawCountAll === null ? {} : { recipientCount: rawCountAll }),
     ...(rawCountRead === null ? {} : { readCount: rawCountRead }),
   };
 }
 
-/** 只在字段确实存在且是数字时才返回，避免把缺失当成 0。 */
-function optionalCount(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim() !== '') {
-    const parsed = Number.parseInt(value, 10);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
-
-/** 统一识别「会话失效」——超星侧失效时返回 HTML 登录页而不是 JSON。 */
 export function parseJsonOrExpire(body: string): Record<string, unknown> {
   const trimmed = body.trim();
   if (trimmed.startsWith('<')) {
@@ -98,114 +87,82 @@ export function parseJsonOrExpire(body: string): Record<string, unknown> {
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    throw new SessionExpiredError('超星通知接口返回了无法解析的内容');
+    throw new SessionExpiredError('超星接口返回了无法解析的响应体');
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new SessionExpiredError('超星通知接口返回结构异常');
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new SessionExpiredError('超星接口返回了畸形响应体');
   }
-  const data = parsed as Record<string, unknown>;
-
-  // 关键：超星会话失效时返回的是**合法 JSON**，HTTP 200：
-  //   {"msg":"您当前未登录","success":false}
-  // 如果只识别 HTML 形态，这里会被当成"没有通知"，会话静默过期后永远恢复不了。
-  if (data['success'] === false) {
-    const message = typeof data['msg'] === 'string' ? data['msg'] : '';
-    if (/未登录|登录|会话|过期|token/i.test(message)) {
-      throw new SessionExpiredError(`超星会话已失效：${message}`);
-    }
+  const record = parsed as Record<string, unknown>;
+  const msg = typeof record['msg'] === 'string' ? record['msg'] : '';
+  if (msg.includes('未登录') || msg.includes('重新登录') || msg.includes('登陆')) {
+    throw new SessionExpiredError(`超星会话已失效（接口提示：${msg}）`);
   }
-  const message = data['msg'];
-  if (typeof message === 'string' && /您当前未登录|未登录/.test(message)) {
-    throw new SessionExpiredError(`超星会话已失效：${message}`);
-  }
-  return data;
+  return record;
 }
 
 export function createNoticeTools(): ToolDefinition[] {
   const listTool: ToolDefinition = {
     name: 'query_notices',
     description:
-      '查询超星（学习通）通知公告列表，返回标题、发送人、时间与已读状态。支持翻页。',
+      '查询学生的超星/学习通通知公告列表。支持按页游标 lastValue 继续翻页（第一页传空串）；' +
+      '支持按关键词与年份过滤。返回通知标题、发送人、发送时间与未读状态。',
     inputSchema: {
       type: 'object',
       properties: {
         lastValue: {
           type: 'string',
-          description: '翻页标记。第一页不传；后续传上一页返回的 nextLastValue。',
+          description:
+            '翻页游标：上一页结果里的 nextLastValue。查第一页时传空字符串或不传。',
+          default: '',
         },
-        year: { type: 'integer', description: '筛选年份，默认当前年份。' },
-        keyword: { type: 'string', description: '按关键词筛选通知。' },
+        keyword: {
+          type: 'string',
+          description: '按标题或正文关键词搜索通知。',
+        },
+        year: {
+          type: 'integer',
+          description: '按年份过滤通知，默认为当前自然年。',
+        },
       },
       additionalProperties: false,
     },
     async handler(args, toolContext: ToolContext) {
       const lastValue = typeof args['lastValue'] === 'string' ? args['lastValue'] : '';
       const keyword = typeof args['keyword'] === 'string' ? args['keyword'] : '';
-      const year =
-        typeof args['year'] === 'number' ? args['year'] : new Date().getFullYear();
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (ctx) => {
-        const form = new URLSearchParams({
-          type: '2',
-          notice_type: '',
-          lastValue,
-          sort: '',
-          folderUUID: '',
-          kw: keyword,
-          startTime: '',
-          endTime: '',
-          gKw: '',
-          gName: '',
-          year: String(year),
-          tag: '',
-          fidsCode: '',
-          queryFolderNoticePrevYear: '0',
-          filterSenderPuids: '',
-          filterTags: '',
-        });
+      const query = new URLSearchParams({ lastValue }).toString();
+      const res = await callRelayApi<any>(toolContext, `/api/campus/notices?${query}`);
 
-        const response = await ctx.session.request(NOTICE_LIST_URL, {
-          method: 'POST',
-          body: form.toString(),
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': DESKTOP_UA,
-            'X-Requested-With': 'XMLHttpRequest',
-            Referer: NOTICE_REFERER,
-          },
-        });
-        if (response.status !== 200) {
-          throw new Error(`获取通知列表失败（HTTP ${response.status}）`);
+      const rawList: any[] = Array.isArray(res?.list)
+        ? res.list
+        : Array.isArray(res)
+          ? res
+          : [];
+
+      let messages = rawList.map((item) => {
+        if (item.uuid && item.sentAt && item.sender !== undefined) {
+          return item;
         }
-
-        const data = parseJsonOrExpire(response.body);
-        const errorMessage = data['errorMsg'];
-        if (typeof errorMessage === 'string' && errorMessage !== '') {
-          throw new Error(`超星接口返回错误：${errorMessage}`);
-        }
-
-        const notices = data['notices'];
-        if (typeof notices !== 'object' || notices === null) {
-          return textResult('没有通知。', { count: 0, messages: [] });
-        }
-        const container = notices as Record<string, unknown>;
-        const rawList = container['list'];
-        if (!Array.isArray(rawList) || rawList.length === 0) {
-          return textResult('没有通知。', { count: 0, messages: [] });
-        }
-
-        const messages = (rawList as RawNotice[]).map(normalizeNotice);
-        const nextLastValue = container['lastGetId'];
-
-        return textResult(
-          `共 ${messages.length} 条通知：\n` +
-            JSON.stringify(messages, null, 2) +
-            (nextLastValue === undefined || nextLastValue === null
-              ? ''
-              : `\n\n下一页请传 lastValue=${String(nextLastValue)}`),
-          { count: messages.length, messages, nextLastValue: nextLastValue ?? null },
-        );
+        return normalizeNotice(item);
       });
+
+      if (keyword.trim()) {
+        const kw = keyword.toLowerCase();
+        messages = messages.filter(
+          (m) =>
+            String(m.title || '').toLowerCase().includes(kw) ||
+            String(m.content || '').toLowerCase().includes(kw),
+        );
+      }
+
+      const nextLastValue = res?.lastGetId ?? null;
+
+      return textResult(
+        `共 ${messages.length} 条通知：\n` +
+          JSON.stringify(messages, null, 2) +
+          (nextLastValue ? `\n\n下一页请传 lastValue=${String(nextLastValue)}` : ''),
+        { count: messages.length, messages, nextLastValue },
+      );
     },
   };
 
@@ -226,23 +183,11 @@ export function createNoticeTools(): ToolDefinition[] {
         return textResult('必须提供 uuid。');
       }
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (ctx) => {
-        const response = await ctx.session.get(
-          `${HOSTS.chaoxingNotice}/pc/notice/${encodeURIComponent(uuid)}/getNoticeDetail?sendTag=0`,
-          {
-            headers: {
-              'User-Agent': DESKTOP_UA,
-              'X-Requested-With': 'XMLHttpRequest',
-              Referer: NOTICE_REFERER,
-            },
-          },
-        );
-        if (response.status !== 200) {
-          throw new Error(`获取通知详情失败（HTTP ${response.status}）`);
-        }
-        const data = parseJsonOrExpire(response.body);
-        return textResult(JSON.stringify(data, null, 2), data);
-      });
+      const data = await callRelayApi<any>(
+        toolContext,
+        `/api/campus/notices/detail?uuid=${encodeURIComponent(uuid)}`,
+      );
+      return textResult(JSON.stringify(data, null, 2), data);
     },
   };
 

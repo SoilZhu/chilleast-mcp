@@ -1,148 +1,11 @@
 /**
- * 空教室查询 —— 走融合门户会话（FUSION Cookie），不需要超星侧凭据。
+ * 空教室查询 —— 迁移至 api.chilleast.soilzhu.su/api/academic/classrooms。
  * 对齐 ChillEast `ClassroomService`。
  */
 
 import { textResult } from '../mcp/protocol';
 import type { ToolContext, ToolDefinition } from '../mcp/registry';
-import {
-  SessionExpiredError,
-  runWithSession,
-  type SessionContext,
-} from '../auth/session-manager';
-import { DESKTOP_UA, URLS } from '../school/hunau/constants';
-
-/** 用 HTMLRewriter 抓某个选择器下每个元素的文本。 */
-async function collectText(html: string, selector: string): Promise<string[]> {
-  // workerd 实测坑：`HTMLRewriter.transform().text()` 对**空响应体**永远不会
-  // resolve（会一直挂到超时）。空输入本来也没有可解析的内容，直接短路。
-
-  if (html.trim() === '') return [];
-
-  const results: string[] = [];
-  let buffer: string | null = null;
-  await new HTMLRewriter()
-    .on(selector, {
-      element(element) {
-        buffer = '';
-        element.onEndTag(() => {
-          results.push((buffer ?? '').trim());
-          buffer = null;
-        });
-      },
-      text(chunk) {
-        if (buffer !== null) buffer += chunk.text;
-      },
-    })
-    .transform(new Response(html))
-    .text();
-  return results;
-}
-
-/** 抓每个元素的文本 + 指定属性。 */
-async function collectWithAttribute(
-  html: string,
-  selector: string,
-  attribute: string,
-): Promise<Array<{ text: string; value: string }>> {
-  // workerd 实测坑：`HTMLRewriter.transform().text()` 对**空响应体**永远不会
-  // resolve（会一直挂到超时）。空输入本来也没有可解析的内容，直接短路。
-
-  if (html.trim() === '') return [];
-
-  const results: Array<{ text: string; value: string }> = [];
-  let buffer: string | null = null;
-  let current: { text: string; value: string } | null = null;
-  await new HTMLRewriter()
-    .on(selector, {
-      element(element) {
-        buffer = '';
-        current = { text: '', value: element.getAttribute(attribute) ?? '' };
-        const entry = current;
-        element.onEndTag(() => {
-          entry.text = (buffer ?? '').trim();
-          results.push(entry);
-          buffer = null;
-          current = null;
-        });
-      },
-      text(chunk) {
-        if (buffer !== null) buffer += chunk.text;
-      },
-    })
-    .transform(new Response(html))
-    .text();
-  return results.filter((entry) => entry.text !== '');
-}
-
-interface ClassroomOptions {
-  buildings: string[];
-  sections: string[];
-  weeks: string[];
-  days: Array<{ label: string; value: string }>;
-}
-
-async function fetchOptions(context: SessionContext): Promise<ClassroomOptions> {
-  const response = await context.session.get(URLS.portalClassroomIndex, {
-    headers: {
-      'User-Agent': DESKTOP_UA,
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    },
-  });
-  if (response.status !== 200) {
-    throw new Error(`获取查询条件失败（HTTP ${response.status}）`);
-  }
-  const html = response.body;
-  if (html.includes('CIMS.init') || /<input\b[^>]*type\s*=\s*["']?password/i.test(html)) {
-    // 会话失效，交给外层重登
-    throw new SessionExpiredError('融合门户会话已失效');
-  }
-
-  return {
-    buildings: await collectText(html, '#jxlCondition a'),
-    sections: await collectText(html, '#jcCondition a'),
-    weeks: await collectText(html, '#zcCondition a'),
-    days: (await collectWithAttribute(html, '#weekCondition a', 'data-value')).map(
-      (entry) => ({ label: entry.text, value: entry.value }),
-    ),
-  };
-}
-
-interface ClassroomRow {
-  [key: string]: unknown;
-}
-
-async function queryClassrooms(
-  context: SessionContext,
-  params: { building: string; week: string; section: string; day: string },
-): Promise<ClassroomRow[]> {
-  const query = new URLSearchParams({
-    jxl: params.building,
-    // 接口参数名反直觉：week 传的是星期几，zc 传的是第几周
-    week: params.day,
-    jc: params.section,
-    zc: params.week,
-  });
-  const response = await context.session.get(`${URLS.portalClassroomQuery}?${query}`, {
-    headers: {
-      'User-Agent': DESKTOP_UA,
-      Accept: 'application/json, text/javascript, */*; q=0.01',
-      'X-Requested-With': 'XMLHttpRequest',
-      Referer: URLS.portalClassroomIndex,
-    },
-  });
-  if (response.status !== 200) {
-    throw new Error(`空教室查询失败（HTTP ${response.status}）`);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(response.body);
-  } catch {
-    throw new SessionExpiredError('空教室查询返回了非 JSON 内容（会话可能已失效）');
-  }
-  const data = (parsed as { data?: unknown }).data;
-  return Array.isArray(data) ? (data as ClassroomRow[]) : [];
-}
+import { callRelayApi } from '../api/client';
 
 export function createClassroomTool(): ToolDefinition {
   return {
@@ -178,30 +41,31 @@ export function createClassroomTool(): ToolDefinition {
       const section = typeof args['section'] === 'string' ? args['section'] : '';
       const day = typeof args['day'] === 'string' ? args['day'] : '';
 
-      const result = await runWithSession(toolContext.env, toolContext.credentials, async (ctx) => {
-        if (building === '' || week === '' || section === '' || day === '') {
-          return { kind: 'options' as const, options: await fetchOptions(ctx) };
-        }
-        return {
-          kind: 'rows' as const,
-          rows: await queryClassrooms(ctx, { building, week, section, day }),
-        };
-      });
-
-      if (result.kind === 'options') {
+      if (building === '' || week === '' || section === '' || day === '') {
+        const options = await callRelayApi<any>(toolContext, '/api/academic/classrooms');
         return textResult(
           '请从下列取值中挑选 building / week / section / day 后再次调用：\n' +
-            JSON.stringify(result.options, null, 2),
-          result.options,
+            JSON.stringify(options, null, 2),
+          options,
         );
       }
-      if (result.rows.length === 0) {
+
+      const query = new URLSearchParams({ building, week, section, day }).toString();
+      const res = await callRelayApi<any>(toolContext, `/api/academic/classrooms?${query}`);
+      const rows = Array.isArray(res?.classrooms)
+        ? res.classrooms
+        : Array.isArray(res?.data)
+          ? res.data
+          : Array.isArray(res)
+            ? res
+            : [];
+
+      if (rows.length === 0) {
         return textResult('该条件下没有空闲教室。');
       }
       return textResult(
-        `共 ${result.rows.length} 条空闲教室记录：\n` +
-          JSON.stringify(result.rows, null, 2),
-        { count: result.rows.length, rows: result.rows },
+        `共 ${rows.length} 条空闲教室记录：\n` + JSON.stringify(rows, null, 2),
+        { count: rows.length, rows },
       );
     },
   };

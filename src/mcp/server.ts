@@ -9,6 +9,7 @@
 import type { Env } from '../env';
 import { LoginError, SessionExpiredError, SessionUnavailableError } from '../auth/session-manager';
 import type { Credentials } from '../auth/session-manager';
+import { ApiError } from '../api/client';
 import {
   ErrorCode,
   LATEST_PROTOCOL_VERSION,
@@ -127,6 +128,12 @@ async function handleRequest(
 
 /** 把内部异常翻译成模型可读、且不泄露敏感信息的错误结果。 */
 function toErrorResult(error: unknown, toolName: string): McpToolResult {
+  if (error instanceof ApiError) {
+    if (error.status === 401) {
+      return errorResult(`身份认证失败或凭据已失效：${error.message}`);
+    }
+    return errorResult(`调用服务失败 [${error.code}]：${error.message}`);
+  }
   if (error instanceof SessionExpiredError) {
     return errorResult(`校园会话已失效且自动重登未成功，请重试。(${error.message})`);
   }

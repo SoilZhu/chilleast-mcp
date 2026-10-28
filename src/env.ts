@@ -15,4 +15,8 @@ export interface Env {
   TURNSTILE_SECRET?: string;
   /** 授权接口的洪水防护（见 wrangler.jsonc 的 ratelimits）。 */
   LOGIN_RATE_LIMITER?: RateLimit;
+  /**
+   * 中转 API 服务地址。默认 https://api.chilleast.soilzhu.su
+   */
+  API_BASE_URL?: string;
 }

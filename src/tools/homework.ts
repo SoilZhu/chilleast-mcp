@@ -1,21 +1,13 @@
 /**
  * MCP Tool: 作业查询 (query_homework)
- *
- * 全量对齐 ChillEast `lib/core/mcp/tools/homework_tools.dart` 的同名工具，
- * 但按用户决定**只做网络部分**：实时从超星 mooc1-api 拉取并解析，
- * 不读也不写设备端的手工待办（那部分在服务端不做）。
+ * 迁移至 api.chilleast.soilzhu.su/api/study/homework 与云备份通道。
  */
 
 import { textResult } from '../mcp/protocol';
-import { loadManualHomework } from './local-data';
 import type { ToolContext, ToolDefinition } from '../mcp/registry';
-import { runWithSession } from '../auth/session-manager';
-import { fetchRemoteHomework } from '../school/hunau/chaoxing-study';
+import { callRelayApi } from '../api/client';
 import {
-  filterHomework,
-  homeworkToJson,
   parseHomeworkFilter,
-  sortHomework,
 } from '../school/hunau/homework-model';
 
 export function createHomeworkTools(): ToolDefinition[] {
@@ -53,18 +45,19 @@ export function createHomeworkTools(): ToolDefinition[] {
     },
     async handler(args, ctx: ToolContext) {
       const filter = parseHomeworkFilter(args);
+      const query = new URLSearchParams({
+        status: filter.status,
+        ...(filter.courseName ? { courseName: filter.courseName } : {}),
+        ...(filter.keyword ? { keyword: filter.keyword } : {}),
+      }).toString();
 
-      const entries = await runWithSession(ctx.env, ctx.credentials, async (context) => {
-        // 同一批作业的倒计时用同一个基准时间（对齐 Dart 的 `final now = DateTime.now()`）
-        return await fetchRemoteHomework(context.session, Date.now());
-      });
+      const homeworkListPromise = callRelayApi<any[]>(ctx, `/api/study/homework?${query}`);
+      const backupPromise = callRelayApi<any>(ctx, '/api/study/cloudisk/backup').catch(() => null);
 
-      const filtered = sortHomework(filterHomework(entries, filter));
-      const homeworkList = filtered.map(homeworkToJson);
-
-      // 手工添加的待办（存在云端备份里，与手机 App 共用同一份）。
-      // 读不到不影响网络作业的返回 —— 只是附加一段说明。
-      const manual = await loadManualHomework(ctx.env, ctx.credentials);
+      const [homeworkRes, backup] = await Promise.all([homeworkListPromise, backupPromise]);
+      const homeworkList = Array.isArray(homeworkRes) ? homeworkRes : [];
+      const manualItems = Array.isArray(backup?.manualHomework) ? backup.manualHomework : [];
+      const manualNote = backup?.fileName ? `来自云端备份 ${backup.fileName}` : null;
 
       const sections: string[] = [];
       sections.push(
@@ -73,19 +66,19 @@ export function createHomeworkTools(): ToolDefinition[] {
           : `超星作业 ${homeworkList.length} 条：\n${JSON.stringify(homeworkList, null, 2)}`,
       );
       sections.push(
-        manual.items.length === 0
+        manualItems.length === 0
           ? '手工待办：无。'
-          : `手工待办 ${manual.items.length} 条：\n${JSON.stringify(manual.items, null, 2)}`,
+          : `手工待办 ${manualItems.length} 条：\n${JSON.stringify(manualItems, null, 2)}`,
       );
-      if (manual.note !== null) sections.push(`（${manual.note}）`);
+      if (manualNote !== null) sections.push(`（${manualNote}）`);
 
       return textResult(sections.join('\n\n'), {
         filterStatus: filter.status,
         totalCount: homeworkList.length,
-        fetchedCount: entries.length,
+        fetchedCount: homeworkList.length,
         homeworkList,
-        manualHomework: manual.items,
-        manualNote: manual.note,
+        manualHomework: manualItems,
+        manualNote,
       });
     },
   };

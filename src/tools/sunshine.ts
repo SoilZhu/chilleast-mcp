@@ -1,22 +1,20 @@
 /**
  * 阳光服务工具（sun.hunau.edu.cn）。
+ * 迁移至 api.chilleast.soilzhu.su/api/campus/sunshine/*。
  *
  * 对齐 ChillEast `lib/core/mcp/tools/sunshine_tool.dart`：
  * 工具名、参数名与两阶段确认（`confirmed`）语义保持一致。
- * 链路说明（CAS OAuth2 逐跳 + GBK 解码）见 `src/school/hunau/sun.ts` 顶部注释。
  */
 
 import { errorResult, textResult } from '../mcp/protocol';
 import type { McpToolResult } from '../mcp/protocol';
 import type { ToolContext, ToolDefinition } from '../mcp/registry';
-import { runWithSession } from '../auth/session-manager';
+import { callRelayApi } from '../api/client';
 import {
   SUNSHINE_TYPE_NAMES,
   defaultSunshineFinishTime,
-  fetchSunshineForm,
   findSunshineDepartment,
   normalizeSunshineType,
-  submitSunshineLetter,
 } from '../school/hunau/sun';
 
 function stringArg(args: Record<string, unknown>, key: string): string {
@@ -39,17 +37,16 @@ export function createSunshineTools(): ToolDefinition[] {
       additionalProperties: false,
     },
     async handler(_args, toolContext: ToolContext) {
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        const form = await fetchSunshineForm(context.session);
-        return render({
-          success: true,
-          userName: form.identity.name,
-          departmentCount: form.departments.length,
-          departments: form.departments.map((department) => ({
-            code: department.code,
-            name: department.name,
-          })),
-        });
+      const form = await callRelayApi<any>(toolContext, '/api/campus/sunshine/departments');
+      const departments = Array.isArray(form?.departments) ? form.departments : [];
+      return render({
+        success: true,
+        userName: form?.identity?.name || '同学',
+        departmentCount: departments.length,
+        departments: departments.map((department: any) => ({
+          code: department.code,
+          name: department.name,
+        })),
       });
     },
   };
@@ -116,82 +113,71 @@ export function createSunshineTools(): ToolDefinition[] {
       if (title === '') return errorResult('诉求标题不能为空');
       if (content === '') return errorResult('诉求正文内容不能为空');
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        // 拿身份信息 + 可受理单位（顺带确认会话可用）
-        const form = await fetchSunshineForm(context.session);
-        const matched = findSunshineDepartment(form.departments, deptInput);
-        if (matched === null) {
-          const sample = form.departments
-            .slice(0, 8)
-            .map((department) => department.name)
-            .join('、');
-          return errorResult(
-            `未找到名为“${deptInput}”的受理部门。可选部门参考：${sample} 等，` +
-              '可调用 query_sunshine_departments 查看完整列表。',
-          );
-        }
+      const form = await callRelayApi<any>(toolContext, '/api/campus/sunshine/departments');
+      const departments = Array.isArray(form?.departments) ? form.departments : [];
+      const matched = findSunshineDepartment(departments, deptInput);
+      if (matched === null) {
+        const sample = departments
+          .slice(0, 8)
+          .map((department: any) => department.name)
+          .join('、');
+        return errorResult(
+          `未找到名为“${deptInput}”的受理部门。可选部门参考：${sample} 等，` +
+            '可调用 query_sunshine_departments 查看完整列表。',
+        );
+      }
 
-        const typeCode = normalizeSunshineType(typeInput === '' ? '2' : typeInput);
-        const typeName = SUNSHINE_TYPE_NAMES[typeCode] ?? '咨询';
-        const phoneArg = stringArg(args, 'phone').trim();
-        const emailArg = stringArg(args, 'email').trim();
-        const phone = phoneArg !== '' ? phoneArg : form.identity.phone;
-        const email = emailArg !== '' ? emailArg : form.identity.email;
-        const finishTimeArg = stringArg(args, 'finishTime').trim();
-        const finishTime = finishTimeArg !== '' ? finishTimeArg : defaultSunshineFinishTime();
+      const typeCode = normalizeSunshineType(typeInput === '' ? '2' : typeInput);
+      const typeName = SUNSHINE_TYPE_NAMES[typeCode] ?? '咨询';
+      const phoneArg = stringArg(args, 'phone').trim();
+      const emailArg = stringArg(args, 'email').trim();
+      const phone = phoneArg !== '' ? phoneArg : form?.identity?.phone || '';
+      const email = emailArg !== '' ? emailArg : form?.identity?.email || '';
+      const finishTimeArg = stringArg(args, 'finishTime').trim();
+      const finishTime = finishTimeArg !== '' ? finishTimeArg : defaultSunshineFinishTime();
 
-        if (!confirmed) {
-          return render({
-            status: 'requires_confirmation',
-            needsUserConsent: true,
-            message:
-              '阳光服务诉求表单已就绪。【重要】：请向用户呈现以下待提交的诉求核对信息，' +
-              '并明确征得用户的同意与确认。用户明确同意确认后，传入 confirmed=true 重新调用本工具正式提交。',
-            formPreview: {
-              submitterName: form.identity.name,
-              departmentName: matched.name,
-              departmentCode: matched.code,
-              typeName,
-              typeCode,
-              title,
-              content,
-              phone,
-              email,
-              finishTime,
-            },
-          });
-        }
+      if (!confirmed) {
+        return render({
+          status: 'requires_confirmation',
+          needsUserConsent: true,
+          message:
+            '阳光服务诉求表单已就绪。【重要】：请向用户呈现以下待提交的诉求核对信息，' +
+            '并明确征得用户的同意与确认。用户明确同意确认后，传入 confirmed=true 重新调用本工具正式提交。',
+          formPreview: {
+            submitterName: form?.identity?.name || '同学',
+            departmentName: matched.name,
+            departmentCode: matched.code,
+            typeName,
+            typeCode,
+            title,
+            content,
+            phone,
+            email,
+            finishTime,
+          },
+        });
+      }
 
-        const result = await submitSunshineLetter(context.session, {
-          identity: form.identity,
-          department: matched,
-          type: typeCode,
+      const res = await callRelayApi<any>(toolContext, '/api/campus/sunshine/submit', {
+        method: 'POST',
+        body: JSON.stringify({
           title,
           content,
+          type: typeCode,
+          departmentCode: matched.code,
           phone,
           email,
           finishTime,
-        });
+        }),
+      });
 
-        if (result === '1') {
-          return render({
-            status: 'success',
-            message: `诉求提交成功！阳光服务平台已受理并流转至【${matched.name}】。`,
-            department: matched.name,
-            type: typeName,
-            title,
-          });
-        }
-        if (result === '2') {
-          return render({
-            status: 'success',
-            message: `诉求提交成功，等待平台审核后将流转至【${matched.name}】。`,
-            department: matched.name,
-            type: typeName,
-            title,
-          });
-        }
-        return errorResult(`提交未被服务器成功处理，状态码: ${result}`);
+      return render({
+        status: 'success',
+        message: `诉求提交成功！阳光服务平台已受理并流转至【${matched.name}】。`,
+        department: matched.name,
+        type: typeName,
+        title,
+        result: res,
       });
     },
   };

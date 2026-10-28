@@ -1,29 +1,17 @@
 /**
  * 一卡通财务平台（fin-serv）工具集。
+ * 迁移至 api.chilleast.soilzhu.su/api/campus/*。
  *
  * 工具名与 ChillEast 完全一致；`query_electricity` / `query_bill` 是
- * `recharge_electricity` / `query_card_transactions` 的**同一实现别名**
- * （用工厂函数传名字生成，对齐 Dart 里 `McpTool.create({String? toolName})` 的写法）。
- *
- * 与客户端（无状态）相比，这里唯一的架构差异是宿舍来源：ChillEast 从
- * `SharedPreferences` 读「上次绑定的宿舍」，服务端没有这份持久状态，改成
- * **显式传参 + 缺参时返回候选列表**的两段式交互（同 `query_empty_classrooms`）。
+ * `recharge_electricity` / `query_card_transactions` 的同一实现别名。
  */
 
 import { textResult, type McpToolResult } from '../mcp/protocol';
 import type { ToolContext, ToolDefinition } from '../mcp/registry';
-import { runWithSession } from '../auth/session-manager';
 import { getEffectiveSessionKey, open, seal } from '../auth/crypto-box';
+import { callRelayApi } from '../api/client';
 import {
-  connectFinServ,
-  createElectricityPreOrder,
   displayRoomName,
-  fetchCardInfo,
-  fetchCardTransactions,
-  fetchElectricAreas,
-  fetchElectricBalance,
-  fetchElectricBuildings,
-  fetchElectricRooms,
   isHashedRoomName,
   resolveElectricityTarget,
   resolveTransactionRange,
@@ -37,8 +25,6 @@ import {
   type ElectricityTarget,
   type FinServCardInfo,
 } from '../school/hunau/finserv';
-
-// ---- 参数读取（MCP 客户端可能给数字也可能给数字字符串，都收） ----
 
 function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -71,7 +57,6 @@ function readAction(value: unknown): ElectricityAction {
   return 'query_balance';
 }
 
-/** 流水最多回 100 条，保护模型上下文（对齐 Dart 工具里的 limit）。 */
 const TRANSACTION_LIMIT = 100;
 
 // ===========================================================================
@@ -95,24 +80,17 @@ function createCampusCardBalanceTool(): ToolDefinition {
       additionalProperties: false,
     },
     async handler(_args, toolContext: ToolContext) {
-      const info = await runWithSession(
-        toolContext.env,
-        toolContext.credentials,
-        async (session) => {
-          const ctx = await connectFinServ(session.session, { log: toolContext.log });
-          return await fetchCardInfo(ctx);
-        },
-      );
-
+      const info = await callRelayApi<any>(toolContext, '/api/campus/card');
+      const balance = typeof info.balance === 'number' ? info.balance.toFixed(2) : String(info.balance ?? '0.00');
       const payload = {
         name: info.name,
         studentId: info.idserial,
-        balance: info.balance,
+        balance,
         unit: '元',
         status: 'success',
       };
       return textResult(
-        `${info.name}（学号 ${info.idserial}）校园卡余额：${info.balance} 元`,
+        `${info.name}（学号 ${info.idserial}）校园卡余额：${balance} 元`,
         payload,
       );
     },
@@ -323,7 +301,6 @@ function renderElectricityOutcome(outcome: ElectricityOutcome): ReturnType<typeo
   }
 }
 
-/** 两个电费工具名共用同一份 schema。 */
 const ELECTRICITY_INPUT_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
@@ -368,10 +345,6 @@ const ELECTRICITY_INPUT_SCHEMA: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-/**
- * 电费工具的唯一实现。`recharge_electricity` 与 `query_electricity`
- * 共用这个函数对象本身（不是复制一份），别名关系因此是可验证的。
- */
 async function electricityHandler(
   args: Record<string, unknown>,
   toolContext: ToolContext,
@@ -385,154 +358,200 @@ async function electricityHandler(
   const amount = readNumber(args['amount']);
   const confirmationToken = readString(args['confirmationToken']);
 
-  const outcome = await runWithSession<ElectricityOutcome>(
-    toolContext.env,
-    toolContext.credentials,
-    async (session) => {
-      const ctx = await connectFinServ(session.session, { log: toolContext.log });
+  if (action === 'get_areas') {
+    const areas = await callRelayApi<ElectricityArea[]>(toolContext, '/api/campus/electricity/areas');
+    return renderElectricityOutcome({ kind: 'areas', areas });
+  }
 
-      if (action === 'get_areas') {
-        return { kind: 'areas', areas: await fetchElectricAreas(ctx) };
-      }
-      if (areaName === '') {
-        return { kind: 'need-area', action };
-      }
-      if (action === 'get_buildings') {
-        return {
-          kind: 'buildings',
-          areaName,
-          buildings: await fetchElectricBuildings(ctx, areaName),
-        };
-      }
-      if (buildingName === '') {
-        return {
-          kind: 'need-building',
-          action,
-          areaName,
-          buildings: await fetchElectricBuildings(ctx, areaName),
-        };
-      }
-      if (action === 'get_rooms') {
-        return {
-          kind: 'rooms',
-          areaName,
-          buildingName,
-          rooms: await fetchElectricRooms(ctx, areaName, buildingName),
-        };
-      }
-      if (roomId === '') {
-        return {
-          kind: 'need-room',
-          action,
-          areaName,
-          buildingName,
-          rooms: await fetchElectricRooms(ctx, areaName, buildingName),
-        };
-      }
+  if (areaName === '') {
+    return renderElectricityOutcome({ kind: 'need-area', action });
+  }
 
-      const target = await resolveElectricityTarget(ctx, {
-        areaName,
-        buildingName,
-        roomId,
-        roomName,
-        mertype,
+  if (action === 'get_buildings') {
+    const buildings = await callRelayApi<ElectricityBuilding[]>(
+      toolContext,
+      `/api/campus/electricity/buildings?areaName=${encodeURIComponent(areaName)}`,
+    );
+    return renderElectricityOutcome({ kind: 'buildings', areaName, buildings });
+  }
+
+  if (buildingName === '') {
+    const buildings = await callRelayApi<ElectricityBuilding[]>(
+      toolContext,
+      `/api/campus/electricity/buildings?areaName=${encodeURIComponent(areaName)}`,
+    );
+    return renderElectricityOutcome({ kind: 'need-building', action, areaName, buildings });
+  }
+
+  if (action === 'get_rooms') {
+    const rooms = await callRelayApi<ElectricityRoom[]>(
+      toolContext,
+      `/api/campus/electricity/rooms?areaName=${encodeURIComponent(areaName)}&buildingName=${encodeURIComponent(buildingName)}`,
+    );
+    return renderElectricityOutcome({ kind: 'rooms', areaName, buildingName, rooms });
+  }
+
+  if (roomId === '') {
+    const rooms = await callRelayApi<ElectricityRoom[]>(
+      toolContext,
+      `/api/campus/electricity/rooms?areaName=${encodeURIComponent(areaName)}&buildingName=${encodeURIComponent(buildingName)}`,
+    );
+    return renderElectricityOutcome({ kind: 'need-room', action, areaName, buildingName, rooms });
+  }
+
+  // 取得当前房间的电表类型与目标配置
+  let effectiveMertype = mertype;
+  let effectiveRoomName = roomName;
+  if (!effectiveMertype || !effectiveRoomName) {
+    const rooms = await callRelayApi<ElectricityRoom[]>(
+      toolContext,
+      `/api/campus/electricity/rooms?areaName=${encodeURIComponent(areaName)}&buildingName=${encodeURIComponent(buildingName)}`,
+    ).catch(() => []);
+    const found = rooms.find((r) => r.id === roomId || r.name === roomId || r.name === roomName);
+    if (found) {
+      if (!effectiveMertype) effectiveMertype = found.mertype || 'yk';
+      if (!effectiveRoomName) effectiveRoomName = found.name;
+    }
+  }
+  if (!effectiveMertype) effectiveMertype = 'yk';
+  if (!effectiveRoomName) effectiveRoomName = roomId;
+
+  const target: ElectricityTarget = {
+    areaName,
+    buildingName,
+    roomId,
+    roomName: effectiveRoomName,
+    mertype: effectiveMertype,
+  };
+
+  if (action === 'recharge') {
+    if (amount === null || amount <= 0) {
+      return renderElectricityOutcome({
+        kind: 'need-amount',
+        areaName: target.areaName,
+        buildingName: target.buildingName,
+        roomName: effectiveRoomName,
       });
+    }
 
-      if (action === 'recharge') {
-        if (amount === null || amount <= 0) {
-          return {
-            kind: 'need-amount',
-            areaName: target.areaName,
-            buildingName: target.buildingName,
-            roomName: displayRoomName(target),
-          };
-        }
-        const roundedAmount = Math.round(amount);
-        // 充值走校园卡扣款，idserial 只能从卡片信息里拿（Dart 也是这么做的）
-        const card = await fetchCardInfo(ctx);
-        const effectiveRoomName = displayRoomName(target);
+    const roundedAmount = Math.round(amount);
+    const cardRaw = await callRelayApi<any>(toolContext, '/api/campus/card');
+    const card: FinServCardInfo = {
+      name: cardRaw.name,
+      idserial: cardRaw.idserial,
+      balance: typeof cardRaw.balance === 'number' ? cardRaw.balance.toFixed(2) : String(cardRaw.balance ?? '0.00'),
+    };
 
-        // 校验二次确认 Token
-        const key = getEffectiveSessionKey(toolContext.env);
-        let tokenValid = false;
-        if (confirmationToken !== '') {
-          try {
-            const jsonStr = await open(confirmationToken, key);
-            const tokenData = JSON.parse(jsonStr) as {
-              type: string;
-              areaName: string;
-              buildingName: string;
-              roomId: string;
-              amount: number;
-              idserial: string;
-              exp: number;
-            };
-
-            if (
-              tokenData.type === 'elec_recharge' &&
-              tokenData.areaName === target.areaName &&
-              tokenData.buildingName === target.buildingName &&
-              tokenData.roomId === target.roomId &&
-              tokenData.amount === roundedAmount &&
-              tokenData.idserial === card.idserial &&
-              tokenData.exp > Date.now()
-            ) {
-              tokenValid = true;
-            }
-          } catch {
-            tokenValid = false;
-          }
-        }
-
-        if (!tokenValid) {
-          const newConfirmationToken = await seal(
-            JSON.stringify({
-              type: 'elec_recharge',
-              areaName: target.areaName,
-              buildingName: target.buildingName,
-              roomId: target.roomId,
-              amount: roundedAmount,
-              idserial: card.idserial,
-              exp: Date.now() + 5 * 60 * 1000,
-            }),
-            key,
-          );
-          return {
-            kind: 'need-confirmation',
-            target,
-            roomName: effectiveRoomName,
-            amount: roundedAmount,
-            card,
-            confirmationToken: newConfirmationToken,
-          };
-        }
-
-        const order = await createElectricityPreOrder(ctx, target, card.idserial, roundedAmount);
-        return {
-          kind: 'recharged',
-          target,
-          roomName: effectiveRoomName,
-          amount: roundedAmount,
-          card,
-          order,
+    const key = getEffectiveSessionKey(toolContext.env);
+    let tokenValid = false;
+    if (confirmationToken !== '') {
+      try {
+        const jsonStr = await open(confirmationToken, key);
+        const tokenData = JSON.parse(jsonStr) as {
+          type: string;
+          areaName: string;
+          buildingName: string;
+          roomId: string;
+          amount: number;
+          idserial: string;
+          exp: number;
         };
-      }
 
-      const balance = await fetchElectricBalance(ctx, target);
-      let resolvedName = displayRoomName(target);
-      if (resolvedName === '所选宿舍' || isHashedRoomName(target.roomName)) {
-        const fromAccount = roomNameFromAccount(balance.accname);
-        if (fromAccount !== '') resolvedName = fromAccount;
+        if (
+          tokenData.type === 'elec_recharge' &&
+          tokenData.areaName === target.areaName &&
+          tokenData.buildingName === target.buildingName &&
+          tokenData.roomId === target.roomId &&
+          tokenData.amount === roundedAmount &&
+          tokenData.idserial === card.idserial &&
+          tokenData.exp > Date.now()
+        ) {
+          tokenValid = true;
+        }
+      } catch {
+        tokenValid = false;
       }
+    }
 
-      if (balance.elestatus !== null && balance.elestatus !== 1) {
-        return { kind: 'meter-abnormal', target, balance, roomName: resolvedName };
-      }
-      return { kind: 'balance', target, balance, roomName: resolvedName };
-    },
-  );
+    if (!tokenValid) {
+      const newConfirmationToken = await seal(
+        JSON.stringify({
+          type: 'elec_recharge',
+          areaName: target.areaName,
+          buildingName: target.buildingName,
+          roomId: target.roomId,
+          amount: roundedAmount,
+          idserial: card.idserial,
+          exp: Date.now() + 5 * 60 * 1000,
+        }),
+        key,
+      );
+      return renderElectricityOutcome({
+        kind: 'need-confirmation',
+        target,
+        roomName: effectiveRoomName,
+        amount: roundedAmount,
+        card,
+        confirmationToken: newConfirmationToken,
+      });
+    }
 
-  return renderElectricityOutcome(outcome);
+    const orderRes = await callRelayApi<any>(toolContext, '/api/campus/electricity/preorder', {
+      method: 'POST',
+      body: JSON.stringify({
+        areaName: target.areaName,
+        buildingName: target.buildingName,
+        roomId: target.roomId,
+        roomName: effectiveRoomName,
+        mertype: target.mertype,
+        amount: roundedAmount,
+      }),
+    });
+
+    const order: ElectricityPreOrder = {
+      success: Boolean(orderRes?.success),
+      message: orderRes?.message || '电费充值预订单已创建',
+      resultData: orderRes?.resultData || orderRes || {},
+    };
+
+    return renderElectricityOutcome({
+      kind: 'recharged',
+      target,
+      roomName: effectiveRoomName,
+      amount: roundedAmount,
+      card,
+      order,
+    });
+  }
+
+  // 默认 action=query_balance
+  const query = new URLSearchParams({
+    area: target.areaName,
+    building: target.buildingName,
+    roomId: target.roomId,
+    room: target.roomName,
+    mertype: target.mertype,
+  }).toString();
+
+  const balanceRaw = await callRelayApi<any>(toolContext, `/api/campus/electricity?${query}`);
+  const balance: ElectricityBalance = {
+    balance: balanceRaw?.balance ?? '0.00',
+    detail: balanceRaw?.detail,
+    accname: balanceRaw?.accname,
+    elestatus: balanceRaw?.elestatus ?? 1,
+  };
+
+  let resolvedName = balanceRaw?.displayRoom || effectiveRoomName;
+  if ((resolvedName === '所选宿舍' || isHashedRoomName(resolvedName)) && balance.accname) {
+    const fromAccount = roomNameFromAccount(balance.accname);
+    if (fromAccount !== '') resolvedName = fromAccount;
+  }
+
+  if (balance.elestatus !== null && balance.elestatus !== 1) {
+    return renderElectricityOutcome({ kind: 'meter-abnormal', target, balance, roomName: resolvedName });
+  }
+
+  return renderElectricityOutcome({ kind: 'balance', target, balance, roomName: resolvedName });
 }
 
 function createElectricityTool(name: 'recharge_electricity' | 'query_electricity'): ToolDefinition {
@@ -594,7 +613,6 @@ function renderTransactions(
   );
 }
 
-/** 两个流水工具名共用同一份 schema。 */
 const TRANSACTION_INPUT_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
@@ -616,7 +634,6 @@ const TRANSACTION_INPUT_SCHEMA: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-/** 流水工具的唯一实现，`query_card_transactions` 与 `query_bill` 共用。 */
 async function transactionsHandler(
   args: Record<string, unknown>,
   toolContext: ToolContext,
@@ -631,14 +648,15 @@ async function transactionsHandler(
   }
   const range = resolved.range;
 
-  const records = await runWithSession(
-    toolContext.env,
-    toolContext.credentials,
-    async (session) => {
-      const ctx = await connectFinServ(session.session, { log: toolContext.log });
-      return await fetchCardTransactions(ctx, range);
-    },
+  const rawRecords = await callRelayApi<any[]>(
+    toolContext,
+    `/api/campus/card/records?days=30`,
   );
+  let records: CardTransaction[] = Array.isArray(rawRecords) ? rawRecords : [];
+
+  if (range.tradeLabel !== '全部') {
+    records = records.filter((r) => r.merchantName?.includes(range.tradeLabel));
+  }
 
   return renderTransactions(range, records);
 }
@@ -661,10 +679,6 @@ function createTransactionTool(name: 'query_card_transactions' | 'query_bill'): 
 // 导出
 // ===========================================================================
 
-/**
- * 五个工具：三个实现 + 两个别名。
- * 别名共用同一 handler，只有 `name`（与描述）不同。
- */
 export function createFinServTools(): ToolDefinition[] {
   return [
     createCampusCardBalanceTool(),

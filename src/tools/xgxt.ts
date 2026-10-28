@@ -17,7 +17,8 @@ import { SessionExpiredError, runWithSession, type SessionContext } from '../aut
 import { encodeForm } from '../auth/http';
 import { exchangeCasTicket, looksLikeLoginPage } from '../school/hunau/cas';
 import { HOSTS, MOBILE_UA, URLS } from '../school/hunau/constants';
-import { b64ToBytes } from '../util/bytes';
+import { b64ToBytes, bytesToB64 } from '../util/bytes';
+import { callRelayApi } from '../api/client';
 
 const XGXT_HOST = new URL(HOSTS.xgxt).hostname;
 
@@ -873,16 +874,16 @@ export function buildQuestionnaireBody(
 
 export function createXgxtTools(): ToolDefinition[] {
   const listTool: ToolDefinition = {
-    name: 'query_questionnaires',
+    name: "query_questionnaires",
     description:
-      '查询湖南农大学工系统下发给本人的问卷/调查任务列表（含是否已完成、起止时间）。' +
-      '拿到 taskTimeM 后可用 query_questionnaire_detail 查看题目。',
+      "查询湖南农大学工系统下发给本人的问卷/调查任务列表（含是否已完成、起止时间）。" +
+      "拿到 taskTimeM 后可用 query_questionnaire_detail 查看题目。",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
         limit: {
-          type: 'integer',
-          description: '返回条数上限，默认 50，最大 200。',
+          type: "integer",
+          description: "返回条数上限，默认 50，最大 200。",
           minimum: 1,
           maximum: 200,
         },
@@ -891,107 +892,65 @@ export function createXgxtTools(): ToolDefinition[] {
     },
     async handler(args, toolContext) {
       const limit =
-        typeof args['limit'] === 'number' ? Math.min(Math.max(args['limit'], 1), 200) : 50;
+        typeof args["limit"] === "number" ? Math.min(Math.max(args["limit"], 1), 200) : 50;
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        const query = new URLSearchParams({
-          bSortable_0: 'false',
-          bSortable_1: 'false',
-          iSortingCols: '1',
-          iDisplayStart: '0',
-          iDisplayLength: String(limit),
-          iSortCol_0: '3',
-          sSortDir_0: 'desc',
-          _t_s_: String(Date.now()),
-        });
-
-        const fetchRows = async (): Promise<Record<string, unknown>> => {
-          const response = await context.session.get(
-            `${URLS.xgxtQuestionnaireList}?${query}`,
-            {
-              follow: false,
-              headers: API_HEADERS,
-            },
-          );
-          return parseXgxtJson(response.status, response.body);
-        };
-
-        const data = await withXgxt(
-          context,
-          fetchRows,
-          () => false, // parseXgxtJson 已经会把登录页当成失效抛出
-        );
-
-        const rows = data['aaData'];
-        if (!Array.isArray(rows)) {
-          return textResult('问卷列表为空或返回结构异常。', { count: 0, items: [] });
-        }
-        const items = (rows as Array<Record<string, unknown>>).map(normalizeItem);
-        if (items.length === 0) {
-          return textResult('当前没有问卷任务。', { count: 0, items: [] });
-        }
-        return textResult(
-          `共 ${items.length} 份问卷：\n${JSON.stringify(items, null, 2)}`,
-          { count: items.length, items },
-        );
-      });
+      const list = await callRelayApi<any[]>(
+        toolContext.env,
+        toolContext.credentials,
+        "/api/xgxt/questionnaires",
+      );
+      if (!Array.isArray(list) || list.length === 0) {
+        return textResult("当前没有问卷任务。", { count: 0, items: [] });
+      }
+      const items = list.slice(0, limit);
+      return textResult(
+        `共 ${items.length} 份问卷：\n${JSON.stringify(items, null, 2)}`,
+        { count: items.length, items },
+      );
     },
   };
 
   const detailTool: ToolDefinition = {
-    name: 'query_questionnaire_detail',
-    description: '查询某份问卷的题目与选项，需要先通过 query_questionnaires 拿到 taskTimeM。',
+    name: "query_questionnaire_detail",
+    description: "查询某份问卷的题目与选项，需要先通过 query_questionnaires 拿到 taskTimeM。",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        taskTimeM: { type: 'string', description: '问卷的 TASK_TIME_M 字段。' },
+        taskTimeM: { type: "string", description: "问卷的 TASK_TIME_M 字段。" },
       },
-      required: ['taskTimeM'],
+      required: ["taskTimeM"],
       additionalProperties: false,
     },
     async handler(args, toolContext) {
-      const taskTimeM = typeof args['taskTimeM'] === 'string' ? args['taskTimeM'].trim() : '';
-      if (taskTimeM === '') {
-        return textResult('必须提供 taskTimeM。');
+      const taskTimeM = typeof args["taskTimeM"] === "string" ? args["taskTimeM"].trim() : "";
+      if (taskTimeM === "") {
+        return textResult("必须提供 taskTimeM。");
       }
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        const query = new URLSearchParams({
-          tasktime: taskTimeM,
-          busType: '',
-          _t_s_: String(Date.now()),
-        });
-        const data = await withXgxt(
-          context,
-          async () => {
-            const response = await context.session.get(
-              `${URLS.xgxtQuestionnaireDetail}?${query}`,
-              { follow: false, headers: API_HEADERS },
-            );
-            return parseXgxtJson(response.status, response.body);
-          },
-          () => false,
-        );
-        return textResult(JSON.stringify(data, null, 2), data);
-      });
+      const detail = await callRelayApi(
+        toolContext.env,
+        toolContext.credentials,
+        `/api/xgxt/questionnaires/detail?taskTime=${encodeURIComponent(taskTimeM)}`,
+      );
+      return textResult(JSON.stringify(detail, null, 2), detail as Record<string, unknown>);
     },
   };
 
   const leaveListTool: ToolDefinition = {
-    name: 'query_leaves',
+    name: "query_leaves",
     description:
-      '查询学校学工系统“请假申请”的请假记录。返回每条记录的类别（事假/病假）、起止时间、' +
-      '时长、事由与审核状态（待审核/审核中/已审核）。拿到 id 后可用 query_leave_detail 看完整详情。',
+      "查询学校学工系统“请假申请”的请假记录。返回每条记录的类别（事假/病假）、起止时间、" +
+      "时长、事由与审核状态（待审核/审核中/已审核）。拿到 id 后可用 query_leave_detail 看完整详情。",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
         status: {
-          type: 'string',
-          description: '按状态过滤：待审核、审核中、已审核、全部。默认为全部。',
+          type: "string",
+          description: "按状态过滤：待审核、审核中、已审核、全部。默认为全部。",
         },
         limit: {
-          type: 'integer',
-          description: '返回条数上限，默认 50，最大 200。',
+          type: "integer",
+          description: "返回条数上限，默认 50，最大 200。",
           minimum: 1,
           maximum: 200,
         },
@@ -999,128 +958,124 @@ export function createXgxtTools(): ToolDefinition[] {
       additionalProperties: false,
     },
     async handler(args: Record<string, unknown>, toolContext: ToolContext) {
-      const status = typeof args['status'] === 'string' ? args['status'].trim() : '全部';
+      const status = typeof args["status"] === "string" ? args["status"].trim() : "全部";
       const limit =
-        typeof args['limit'] === 'number'
-          ? Math.min(Math.max(Math.trunc(args['limit']), 1), 200)
+        typeof args["limit"] === "number"
+          ? Math.min(Math.max(Math.trunc(args["limit"]), 1), 200)
           : 50;
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        const query = new URLSearchParams({
-          bSortable_0: 'false',
-          bSortable_1: 'false',
-          iSortingCols: '1',
-          iDisplayStart: '0',
-          iDisplayLength: String(limit),
-          iSortCol_0: '3',
-          sSortDir_0: 'desc',
-          _t_s_: String(Date.now()),
-        });
-        const data = await xgxtGetJson(context, `${URLS.xgxtLeaveList}?${query}`, LEAVE_HEADERS);
+      const records = await callRelayApi<any[]>(
+        toolContext.env,
+        toolContext.credentials,
+        "/api/xgxt/leave",
+      );
+      if (!Array.isArray(records)) {
+        return textResult("请假记录为空或返回结构异常。", { count: 0, leaves: [] });
+      }
 
-        const rows = data['aaData'];
-        if (!Array.isArray(rows)) {
-          return textResult('请假记录为空或返回结构异常。', { count: 0, leaves: [] });
-        }
-        const leaves = rows
-          .filter(isRecord)
-          .filter((row) => matchesLeaveStatus(asText(row['SHZT']), status))
-          .map(formatLeaveRecord);
-        if (leaves.length === 0) {
-          return textResult(`没有符合条件的请假记录（筛选：${status}）。`, { count: 0, leaves: [] });
-        }
-        return textResult(`共 ${leaves.length} 条请假记录：\n${JSON.stringify(leaves, null, 2)}`, {
-          success: true,
-          count: leaves.length,
-          leaves,
-        });
+      const leaves = records
+        .filter((row) => matchesLeaveStatus(asText(row["auditStatus"] ?? row["SHZT"]), status))
+        .slice(0, limit);
+
+      if (leaves.length === 0) {
+        return textResult(`没有符合条件的请假记录（筛选：${status}）。`, { count: 0, leaves: [] });
+      }
+      return textResult(`共 ${leaves.length} 条请假记录：\n${JSON.stringify(leaves, null, 2)}`, {
+        success: true,
+        count: leaves.length,
+        leaves,
       });
     },
   };
 
   const leaveDetailTool: ToolDefinition = {
-    name: 'query_leave_detail',
+    name: "query_leave_detail",
     description:
-      '查询某条请假记录的完整详情（事由、紧急联系人、离校去向、备注、出市/出省、附件等）。' +
-      'id 取自 query_leaves 返回的 id 字段。',
+      "查询某条请假记录的完整详情（事由、紧急联系人、离校去向、备注、出市/出省、附件等）。" +
+      "id 取自 query_leaves 返回的 id 字段。",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        id: { type: 'string', description: '请假记录 id（query_leaves 返回的 id 字段）。' },
+        id: { type: "string", description: "请假记录 id（query_leaves 返回的 id 字段）。" },
       },
-      required: ['id'],
+      required: ["id"],
       additionalProperties: false,
     },
     async handler(args: Record<string, unknown>, toolContext: ToolContext) {
-      const id = typeof args['id'] === 'string' ? args['id'].trim() : '';
-      if (id === '') return textResult('必须提供请假记录 id（可先用 query_leaves 获取）。');
+      const id = typeof args["id"] === "string" ? args["id"].trim() : "";
+      if (id === "") return textResult("必须提供请假记录 id（可先用 query_leaves 获取）。");
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        const url = `${URLS.xgxtLeaveApply}/${encodeURIComponent(id)}?${stampQuery()}`;
-        const detail = await xgxtGetJson(context, url, LEAVE_HEADERS);
-        return textResult(JSON.stringify(detail, null, 2), { success: true, id, detail });
-      });
+      const records = await callRelayApi<any[]>(
+        toolContext.env,
+        toolContext.credentials,
+        "/api/xgxt/leave",
+      );
+      const detail = records.find((r) => String(r.id) === id);
+      if (!detail) {
+        return textResult(`未找到 id 为 "${id}" 的请假记录。`, { success: false, id });
+      }
+      return textResult(JSON.stringify(detail, null, 2), { success: true, id, detail });
     },
   };
 
   const leaveSubmitTool: ToolDefinition = {
-    name: 'submit_leave',
+    name: "submit_leave",
     description:
-      '代用户提交请假申请。【写操作，有副作用】confirmed=true 时会真实创建一条待审核的请假单，' +
-      '请务必先给用户核对预览。请假时长由起止时间自动计算（服务端 calculate 接口），无需传入；' +
-      '时间格式均为 YYYY-MM-DD HH:mm（24 小时制）。需要附病假条等材料时，把文件内容 base64 放到 ' +
-      'attachmentBase64、文件名放到 attachmentName（含扩展名，解码后最大 1MB）。' +
-      '【重要】首次调用保持 confirmed=false，工具返回待确认的申请预览（含算出的时长）；' +
-      '向用户逐项核对并取得明确同意后，再传 confirmed=true 真正提交。',
+      "代用户提交请假申请。【写操作，有副作用】confirmed=true 时会真实创建一条待审核的请假单，" +
+      "请务必先给用户核对预览。请假时长由起止时间自动计算（服务端 calculate 接口），无需传入；" +
+      "时间格式均为 YYYY-MM-DD HH:mm（24 小时制）。需要附病假条等材料时，把文件内容 base64 放到 " +
+      "attachmentBase64、文件名放到 attachmentName（含扩展名，解码后最大 1MB）。" +
+      "【重要】首次调用保持 confirmed=false，工具返回待确认的申请预览（含算出的时长）；" +
+      "向用户逐项核对并取得明确同意后，再传 confirmed=true 真正提交。",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
-        type: { type: 'string', description: '请假类别：事假或病假（支持关键词）。' },
+        type: { type: "string", description: "请假类别：事假或病假（支持关键词）。" },
         startTime: {
-          type: 'string',
-          description: '开始时间，格式 YYYY-MM-DD HH:mm，如“2026-09-22 10:00”。',
+          type: "string",
+          description: "开始时间，格式 YYYY-MM-DD HH:mm，如“2026-09-22 10:00”。",
         },
         endTime: {
-          type: 'string',
-          description: '结束时间，格式 YYYY-MM-DD HH:mm，必须晚于开始时间。',
+          type: "string",
+          description: "结束时间，格式 YYYY-MM-DD HH:mm，必须晚于开始时间。",
         },
-        reason: { type: 'string', description: '请假事由（必填）。' },
-        contact: { type: 'string', description: '紧急联系人（必填）。' },
-        phone: { type: 'string', description: '紧急联系人电话（必填，11 位手机号）。' },
-        companions: { type: 'string', description: '同行人员（选填）。' },
+        reason: { type: "string", description: "请假事由（必填）。" },
+        contact: { type: "string", description: "紧急联系人（必填）。" },
+        phone: { type: "string", description: "紧急联系人电话（必填，11 位手机号）。" },
+        companions: { type: "string", description: "同行人员（选填）。" },
         leaveSchool: {
-          type: 'boolean',
-          description: '是否离校。默认为 false；为 true 时 province、address、remark 必填。',
+          type: "boolean",
+          description: "是否离校。默认为 false；为 true 时 province、address、remark 必填。",
           default: false,
         },
-        province: { type: 'string', description: '离校去向省份关键词（如“湖南”，离校时必填）。' },
-        city: { type: 'string', description: '离校去向城市关键词（如“长沙”，选填，越细越好）。' },
-        county: { type: 'string', description: '离校区县关键词（如“岳麓”，选填）。' },
-        address: { type: 'string', description: '离校详细地址（离校时必填）。' },
+        province: { type: "string", description: "离校去向省份关键词（如“湖南”，离校时必填）。" },
+        city: { type: "string", description: "离校去向城市关键词（如“长沙”，选填，越细越好）。" },
+        county: { type: "string", description: "离校区县关键词（如“岳麓”，选填）。" },
+        address: { type: "string", description: "离校详细地址（离校时必填）。" },
         backDorm: {
-          type: 'boolean',
-          description: '是否回宿舍。默认为 false。',
+          type: "boolean",
+          description: "是否回宿舍。默认为 false。",
           default: false,
         },
-        remark: { type: 'string', description: '备注（离校时必填）。' },
-        outCity: { type: 'boolean', description: '是否出市。默认为 false。', default: false },
-        outProvince: { type: 'boolean', description: '是否出省。默认为 false。', default: false },
+        remark: { type: "string", description: "备注（离校时必填）。" },
+        outCity: { type: "boolean", description: "是否出市。默认为 false。", default: false },
+        outProvince: { type: "boolean", description: "是否出省。默认为 false。", default: false },
         attachmentBase64: {
-          type: 'string',
-          description: '附件内容（标准 base64，不要带 data URI 前缀）。选填，解码后最大 1MB。',
+          type: "string",
+          description: "附件内容（标准 base64，不要带 data URI 前缀）。选填，解码后最大 1MB。",
         },
         attachmentName: {
-          type: 'string',
-          description: '附件文件名（含扩展名，如“病历.jpg”）。传了 attachmentBase64 就必填。',
+          type: "string",
+          description: "附件文件名（含扩展名，如“病历.jpg”）。传了 attachmentBase64 就必填。",
         },
         confirmed: {
-          type: 'boolean',
+          type: "boolean",
           description:
-            '用户是否已对预览中的申请内容做最终确认。默认为 false；仅当用户明确同意提交后才传 true。',
+            "用户是否已对预览中的申请内容做最终确认。默认为 false；仅当用户明确同意提交后才传 true。",
           default: false,
         },
       },
-      required: ['type', 'startTime', 'endTime', 'reason', 'contact', 'phone'],
+      required: ["type", "startTime", "endTime", "reason", "contact", "phone"],
       additionalProperties: false,
     },
     async handler(args: Record<string, unknown>, toolContext: ToolContext) {
@@ -1128,313 +1083,253 @@ export function createXgxtTools(): ToolDefinition[] {
       if (!input.ok) return textResult(input.message);
       const form = input.value;
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        // 1. 类别字典（事假 / 病假 …）
-        const typeQuery = new URLSearchParams({
-          name: 'MsDict',
-          paramValue: 'DM_SF_QJLX',
-          _t_s_: String(Date.now()),
-        });
-        const types = parseLeaveDict(
-          await xgxtGetArray(context, `${URLS.xgxtLeaveDict}?${typeQuery}`, LEAVE_HEADERS),
+      // 1. 类别字典
+      const types = await callRelayApi<LeaveDictItem[]>(
+        toolContext.env,
+        toolContext.credentials,
+        "/api/xgxt/leave/types",
+      );
+      const type = matchLeaveDict(types || [], form.type);
+      if (type === null) {
+        const options = (types || []).map((item) => item.name).join("、");
+        return textResult(
+          `未知的请假类别“${form.type}”。可选：${options === "" ? "（未取到类别字典）" : options}。`,
         );
-        const type = matchLeaveDict(types, form.type);
-        if (type === null) {
-          const options = types.map((item) => item.name).join('、');
-          return textResult(
-            `未知的请假类别“${form.type}”。可选：${options === '' ? '（未取到类别字典）' : options}。`,
-          );
-        }
+      }
 
-        // 2. 离校去向：省市县逐级匹配，取最深一级（与 Dart 申请页一致）
-        let region = { id: '', name: '' };
-        if (form.leaveSchool) {
-          const regionQuery = new URLSearchParams({
-            xian_allow_empty: '0',
-            _t_s_: String(Date.now()),
-          });
-          const regions = parseRegionNodes(
-            await xgxtGetArray(context, `${URLS.xgxtLeaveRegion}?${regionQuery}`, LEAVE_HEADERS),
-          );
-          const province = matchRegionNode(regions, form.province);
-          if (province === null) {
-            return textResult(`未找到省份“${form.province}”，可传“湖南”这类关键词。`);
-          }
-          let deepest = province;
-          if (form.city !== '') {
-            const city = matchRegionNode(province.children, form.city);
-            if (city === null) {
-              return textResult(`“${province.name}”下未找到城市“${form.city}”。`);
-            }
-            deepest = city;
-            if (form.county !== '') {
-              const county = matchRegionNode(city.children, form.county);
-              if (county === null) {
-                return textResult(`“${city.name}”下未找到区县“${form.county}”。`);
-              }
-              deepest = county;
-            }
-          }
-          region = { id: deepest.id, name: deepest.name };
-        }
+      // 2. 离校去向
+      const region = {
+        id: "",
+        name: [form.province, form.city, form.county].filter(Boolean).join(" ") || form.province,
+      };
 
-        // 3. 时长交给服务端算，并把结果带回预览给用户确认
-        const calculateQuery = new URLSearchParams({
-          kssj: form.startTime,
-          jssj: form.endTime,
-          _t_s_: String(Date.now()),
-        });
-        const duration = parseLeaveDuration(
-          await xgxtGetJson(
-            context,
-            `${URLS.xgxtLeaveCalculate}?${calculateQuery}`,
-            LEAVE_HEADERS,
-          ),
-        );
+      // 3. 时长
+      const q = new URLSearchParams({
+        start: form.startTime,
+        end: form.endTime,
+      }).toString();
+      const duration = await callRelayApi<LeaveDuration>(
+        toolContext.env,
+        toolContext.credentials,
+        `/api/xgxt/leave/duration?${q}`,
+      );
 
-        const durationText = `${duration.days}天${duration.hours}小时`;
-        const attachmentText =
-          form.attachment === null
-            ? '无'
-            : `${form.attachment.name}（${form.attachment.bytes.length} 字节）`;
-        const preview: Record<string, unknown> = {
-          type: type.name,
-          typeId: type.id,
-          startTime: form.startTime,
-          endTime: form.endTime,
-          duration: durationText,
-          reason: form.reason,
-          contact: form.contact,
-          phone: form.phone,
-          companions: form.companions,
-          leaveSchool: form.leaveSchool ? '是' : '否',
-          destination: region.name,
-          address: form.address,
-          backDorm: form.backDorm ? '是' : '否',
-          remark: form.remark,
-          outCity: form.outCity ? '是' : '否',
-          outProvince: form.outProvince ? '是' : '否',
-          attachment: attachmentText,
-        };
+      const durationText = `${duration.days}天${duration.hours}小时`;
+      const attachmentText =
+        form.attachment === null
+          ? "无"
+          : `${form.attachment.name}（${form.attachment.bytes.length} 字节）`;
+      const preview: Record<string, unknown> = {
+        type: type.name,
+        typeId: type.id,
+        startTime: form.startTime,
+        endTime: form.endTime,
+        duration: durationText,
+        reason: form.reason,
+        contact: form.contact,
+        phone: form.phone,
+        companions: form.companions,
+        leaveSchool: form.leaveSchool ? "是" : "否",
+        destination: region.name,
+        address: form.address,
+        backDorm: form.backDorm ? "是" : "否",
+        remark: form.remark,
+        outCity: form.outCity ? "是" : "否",
+        outProvince: form.outProvince ? "是" : "否",
+        attachment: attachmentText,
+      };
 
-        // 4. 未确认：只返回预览，绝不写
-        if (!form.confirmed) {
-          const message =
-            '请假申请已就绪，尚未提交。【重要】请把下面 applicationPreview 逐项呈现给用户，' +
-            '确认无误并取得明确同意后，再传 confirmed=true 重新调用本工具正式提交（会真实创建请假单）。';
-          return textResult(
-            JSON.stringify(
-              {
-                status: 'requires_confirmation',
-                needsUserConsent: true,
-                message,
-                applicationPreview: preview,
-              },
-              null,
-              2,
-            ),
+      // 4. 未确认：只返回预览
+      if (!form.confirmed) {
+        const message =
+          "请假申请已就绪，尚未提交。【重要】请把下面 applicationPreview 逐项呈现给用户，" +
+          "确认无误并取得明确同意后，再传 confirmed=true 重新调用本工具正式提交（会真实创建请假单）。";
+        return textResult(
+          JSON.stringify(
             {
-              status: 'requires_confirmation',
+              status: "requires_confirmation",
               needsUserConsent: true,
               message,
               applicationPreview: preview,
             },
-          );
-        }
-
-        // 5. 已确认：真正提交。无附件 urlencoded、有附件 multipart（与 Dart 一致）。
-        //    与 Dart LeaveService.submit 相同，会话失效时由 withXgxt 重登后重投一次。
-        const fields = buildLeaveFields(form, type, region, duration);
-        const attachment = form.attachment;
-        const response = await withXgxt(
-          context,
-          async (): Promise<{ status: number; body: string }> => {
-            const url = `${URLS.xgxtLeaveApply}?${stampQuery()}`;
-            if (attachment === null) {
-              const posted = await context.session.postForm(url, fields, {
-                follow: false,
-                headers: LEAVE_HEADERS,
-              });
-              return { status: posted.status, body: posted.body };
-            }
-            return await postMultipartWithJar(
-              context,
-              url,
-              buildLeaveMultipartForm(fields, attachment),
-            );
-          },
-          () => false,
-        );
-
-        const data = parseXgxtJson(response.status, response.body);
-        if (data['result'] !== true) {
-          throw new Error(`提交请假申请失败：${submitFailureMessage(data)}`);
-        }
-        return textResult(
-          `请假申请提交成功：${type.name}（${form.startTime} ~ ${form.endTime}，共${durationText}）。` +
-            (attachment === null ? '如需补充请假材料，请在 App 内上传。' : '附件已一并提交。'),
+            null,
+            2,
+          ),
           {
-            success: true,
-            type: type.name,
-            startTime: form.startTime,
-            endTime: form.endTime,
-            duration: durationText,
-            attachment: attachment === null ? null : attachment.name,
+            status: "requires_confirmation",
+            needsUserConsent: true,
+            message,
+            applicationPreview: preview,
           },
         );
-      });
+      }
+
+      // 5. 已确认：真正提交
+      const fields = buildLeaveFields(form, type, region, duration);
+      const attachmentPayload = form.attachment
+        ? {
+            filename: form.attachment.name,
+            contentBase64: bytesToB64(form.attachment.bytes),
+            contentType: form.attachment.contentType,
+          }
+        : undefined;
+
+      await callRelayApi(
+        toolContext.env,
+        toolContext.credentials,
+        "/api/xgxt/leave",
+        {
+          method: "POST",
+          body: {
+            fields,
+            attachment: attachmentPayload,
+          },
+        },
+      );
+
+      return textResult(
+        `请假申请提交成功：${type.name}（${form.startTime} ~ ${form.endTime}，共${durationText}）。` +
+          (form.attachment === null ? "如需补充请假材料，请在 App 内上传。" : "附件已一并提交。"),
+        {
+          success: true,
+          type: type.name,
+          startTime: form.startTime,
+          endTime: form.endTime,
+          duration: durationText,
+          attachment: form.attachment === null ? null : form.attachment.name,
+        },
+      );
     },
   };
 
   const questionnaireSubmitTool: ToolDefinition = {
-    name: 'submit_questionnaire',
+    name: "submit_questionnaire",
     description:
-      '代用户填写并提交学工问卷。【写操作，有副作用】confirmed=true 时会真实把答卷提交到学工系统。' +
-      'answers 以题目标题关键词或题目 dm 为 key：单选题 value 传选项名或选项 dm（支持模糊，如“是”）；' +
-      '多选题 value 传选项名数组（也接受顿号/逗号分隔的文本）；填空/电话题传文本；日期题传 YYYY-MM-DD。' +
-      '【重要】首次调用保持 confirmed=false，工具返回问卷与答案预览；向用户逐题核对并取得明确同意后，' +
-      '再传 confirmed=true 真正提交。已提交过的问卷允许重复提交，新答案将覆盖之前的提交。' +
-      '本工具不会自动重试（避免重复投递）：若提示会话已失效，请重新调用一次。',
+      "代用户填写并提交学工问卷。【写操作，有副作用】confirmed=true 时会真实把答卷提交到学工系统。" +
+      "answers 以题目标题关键词或题目 dm 为 key：单选题 value 传选项名或选项 dm（支持模糊，如“是”）；" +
+      "多选题 value 传选项名数组（也接受顿号/逗号分隔的文本）；填空/电话题传文本；日期题传 YYYY-MM-DD。" +
+      "【重要】首次调用保持 confirmed=false，工具返回问卷与答案预览；向用户逐题核对并取得明确同意后，" +
+      "再传 confirmed=true 真正提交。已提交过的问卷允许重复提交，新答案将覆盖之前的提交。" +
+      "本工具不会自动重试（避免重复投递）：若提示会话已失效，请重新调用一次。",
     inputSchema: {
-      type: 'object',
+      type: "object",
       properties: {
         questionnaire: {
-          type: 'string',
-          description: '问卷标题关键词（如“国庆”）或问卷 id（query_questionnaires 返回的 taskTimeM/dm）。',
+          type: "string",
+          description: "问卷标题关键词（如“国庆”）或问卷 id（query_questionnaires 返回的 taskTimeM/dm）。",
         },
         answers: {
-          type: 'object',
+          type: "object",
           description:
-            '答案映射：key 为题目标题关键词或题目 dm，value 为答案（单选传选项名/选项 dm，多选传数组，填空/日期传文本）。',
-          additionalProperties: { type: ['string', 'array'], items: { type: 'string' } },
+            "答案映射：key 为题目标题关键词或题目 dm，value 为答案（单选传选项名/选项 dm，多选传数组，填空/日期传文本）。",
+          additionalProperties: { type: ["string", "array"], items: { type: "string" } },
         },
         confirmed: {
-          type: 'boolean',
+          type: "boolean",
           description:
-            '用户是否已对预览中的每道题答案做最终确认。默认为 false；仅当用户明确同意提交后才传 true。',
+            "用户是否已对预览中的每道题答案做最终确认。默认为 false；仅当用户明确同意提交后才传 true。",
           default: false,
         },
       },
-      required: ['questionnaire', 'answers'],
+      required: ["questionnaire", "answers"],
       additionalProperties: false,
     },
     async handler(args: Record<string, unknown>, toolContext: ToolContext) {
-      const keyword = typeof args['questionnaire'] === 'string' ? args['questionnaire'].trim() : '';
-      if (keyword === '') {
-        return textResult('请指定问卷标题关键词或 id（可先用 query_questionnaires 查看列表）。');
+      const keyword = typeof args["questionnaire"] === "string" ? args["questionnaire"].trim() : "";
+      if (keyword === "") {
+        return textResult("请指定问卷标题关键词或 id（可先用 query_questionnaires 查看列表）。");
       }
-      const rawAnswers = args['answers'];
+      const rawAnswers = args["answers"];
       if (!isRecord(rawAnswers)) {
-        return textResult('answers 须为对象（题目关键词或题目 dm -> 答案）。');
+        return textResult("answers 须为对象（题目关键词或题目 dm -> 答案）。");
       }
-      const confirmed = args['confirmed'] === true;
+      const confirmed = args["confirmed"] === true;
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        // 1. 列表 + 详情：都是 GET，会话失效交给 withXgxt 换票重试
-        const listQuery = new URLSearchParams({
-          bSortable_0: 'false',
-          bSortable_1: 'false',
-          iSortingCols: '1',
-          iDisplayStart: '0',
-          iDisplayLength: '200',
-          iSortCol_0: '3',
-          sSortDir_0: 'desc',
-          _t_s_: String(Date.now()),
-        });
-        const items = parseQuestionnaireItems(
-          await xgxtGetJson(context, `${URLS.xgxtQuestionnaireList}?${listQuery}`, API_HEADERS),
-        );
-        const matched = matchQuestionnaire(items, keyword);
-        if (matched === null) {
-          return textResult(`未找到问卷“${keyword}”，可先调用 query_questionnaires 查看列表。`);
-        }
-        if (matched.taskTimeM === '') {
-          return textResult('该问卷缺少任务标识（TASK_TIME_M），无法填写。');
-        }
+      // 1. 获取问卷列表
+      const items = await callRelayApi<QuestionnaireItem[]>(
+        toolContext.env,
+        toolContext.credentials,
+        "/api/xgxt/questionnaires",
+      );
+      const matched = matchQuestionnaire(items || [], keyword);
+      if (matched === null) {
+        return textResult(`未找到问卷“${keyword}”，可先调用 query_questionnaires 查看列表。`);
+      }
+      if (!matched.taskTimeM) {
+        return textResult("该问卷缺少任务标识（TASK_TIME_M），无法填写。");
+      }
 
-        const detailQuery = new URLSearchParams({
-          tasktime: matched.taskTimeM,
-          busType: '',
-          _t_s_: String(Date.now()),
-        });
-        const detail = parseQuestionnaireDetail(
-          await xgxtGetJson(context, `${URLS.xgxtQuestionnaireDetail}?${detailQuery}`, API_HEADERS),
-        );
-        if (!detail.canSubmit) {
-          return textResult(`问卷《${detail.title}》当前不可提交（可能已截止）。`);
-        }
+      // 2. 获取详情
+      const detail = await callRelayApi<QuestionnaireDetail>(
+        toolContext.env,
+        toolContext.credentials,
+        `/api/xgxt/questionnaires/detail?taskTime=${encodeURIComponent(matched.taskTimeM)}`,
+      );
+      if (!detail.canSubmit) {
+        return textResult(`问卷《${detail.title}》当前不可提交（可能已截止）。`);
+      }
 
-        // 2. 逐题把用户答案映射成提交载荷
-        const resolved = resolveQuestionnaireAnswers(detail, rawAnswers);
-        if (!resolved.ok) return textResult(resolved.message);
+      // 3. 逐题解析
+      const resolved = resolveQuestionnaireAnswers(detail, rawAnswers);
+      if (!resolved.ok) return textResult(resolved.message);
 
-        const isResubmit = isQuestionnaireSubmitted(matched);
-        if (!confirmed) {
-          const message =
-            '学工问卷已就绪，尚未提交。【重要】请把下面 answersPreview 逐题呈现给用户，' +
-            '确认无误并取得明确同意后，再传 confirmed=true 重新调用本工具正式提交。' +
-            (isResubmit ? '注意：该问卷已提交过，本次提交将覆盖之前的答案。' : '');
-          return textResult(
-            JSON.stringify(
-              {
-                status: 'requires_confirmation',
-                needsUserConsent: true,
-                message,
-                questionnaire: detail.title,
-                isResubmit,
-                answersPreview: resolved.value.preview,
-              },
-              null,
-              2,
-            ),
+      const isResubmit = isQuestionnaireSubmitted(matched);
+      if (!confirmed) {
+        const message =
+          "学工问卷已就绪，尚未提交。【重要】请把下面 answersPreview 逐题呈现给用户，" +
+          "确认无误并取得明确同意后，再传 confirmed=true 重新调用本工具正式提交。" +
+          (isResubmit ? "注意：该问卷已提交过，本次提交将覆盖之前的答案。" : "");
+        return textResult(
+          JSON.stringify(
             {
-              status: 'requires_confirmation',
+              status: "requires_confirmation",
               needsUserConsent: true,
               message,
               questionnaire: detail.title,
               isResubmit,
               answersPreview: resolved.value.preview,
             },
-          );
-        }
-
-        // 3. 已确认：手工拼 urlencoded body 提交。
-        //    只发一次，不自动重试（避免重复投递）；会话若在提交瞬间失效，直接如实告知用户重来。
-        const body = buildQuestionnaireBody(resolved.value.fields, detail.jgM);
-        await ensureXgxtSession(context);
-        const response = await context.session.request(
-          `${URLS.xgxtQuestionnaireSubmit}?${stampQuery()}`,
+            null,
+            2,
+          ),
           {
-            method: 'POST',
-            headers: {
-              ...API_HEADERS,
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body,
-            follow: false,
+            status: "requires_confirmation",
+            needsUserConsent: true,
+            message,
+            questionnaire: detail.title,
+            isResubmit,
+            answersPreview: resolved.value.preview,
           },
         );
+      }
 
-        let data: Record<string, unknown>;
-        try {
-          data = parseXgxtJson(response.status, response.body);
-        } catch (error) {
-          if (error instanceof SessionExpiredError) {
-            return textResult(
-              '提交未完成：提交瞬间学工系统会话已失效（本次未提交成功，也没有自动重试，以免重复投递）。' +
-                '请重新调用本工具提交一次。',
-            );
-          }
-          throw error;
+      // 4. 提交
+      const answersPayload: Record<string, string | string[]> = {};
+      for (const field of resolved.value.fields) {
+        if (field.values.length <= 1) {
+          answersPayload[field.dm] = field.values[0] ?? "";
+        } else {
+          answersPayload[field.dm] = field.values;
         }
-        if (data['result'] !== true) {
-          throw new Error(`提交问卷失败：${submitFailureMessage(data)}`);
-        }
-        return textResult(`问卷《${detail.title}》提交成功！`, {
-          success: true,
-          questionnaire: detail.title,
-          isResubmit,
-        });
+      }
+
+      await callRelayApi(
+        toolContext.env,
+        toolContext.credentials,
+        "/api/xgxt/questionnaires/submit",
+        {
+          method: "POST",
+          body: {
+            taskTime: matched.taskTimeM,
+            answers: answersPayload,
+          },
+        },
+      );
+
+      return textResult(`问卷《${detail.title}》提交成功！`, {
+        success: true,
+        questionnaire: detail.title,
+        isResubmit,
       });
     },
   };
