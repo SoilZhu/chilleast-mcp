@@ -1,30 +1,19 @@
 /**
  * 图书馆工具。
+ * 迁移至 api.chilleast.soilzhu.su/api/library/*。
  *
  * 其中 3 个工具名各带一个等价别名（同一实现注册成两个名字）：
  *   quick_reserve_library_seat ←→ quick_reserve
  *   search_library_books       ←→ query_books
  *   query_library_book_detail  ←→ query_book_detail
- *
- * 两条链路：座位预约（office.chaoxing.com）需要超星会话，且要先做一次凭证置换；
- * 图书检索（superlib.hunau.edu.cn）不需要任何鉴权，只靠超星 App UA + Referer。
  */
 
-import {
-  LoginError,
-  SessionUnavailableError,
-  runWithSession,
-} from '../auth/session-manager';
 import { errorResult, textResult } from '../mcp/protocol';
 import type { ToolContext, ToolDefinition } from '../mcp/registry';
+import { callRelayApi } from '../api/client';
 import {
-  fetchSeatIndex,
   fullRoomName,
-  matchSeat,
   reserveStatusLabel,
-  seedSeatSession,
-  submitQuickReservation,
-  submitReservation,
   type SeatReserve,
 } from '../school/hunau/library';
 import {
@@ -32,9 +21,7 @@ import {
   MAX_PAGE_LIMIT,
   SEARCH_TYPES,
   effectiveCatalogItems,
-  fetchLibraryBookDetail,
   holdingIsAvailable,
-  searchLibraryBooks,
 } from '../school/hunau/library-book';
 import {
   availableReserveDays,
@@ -46,8 +33,6 @@ import {
   isValidRange,
   normalizeFloor,
 } from '../school/hunau/library-time';
-
-// ---- 参数解析 ----
 
 function strArg(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -66,26 +51,16 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-// ---- 最近一次预约 ----
-
 interface LastReserve {
   reserve: SeatReserve;
 }
 
-/**
- * 取「最近一次预约」：查线上首页数据（当前预约 → 即将开始）。
- *
- * 注意：ChillEast 客户端还有一层「设备本地缓存」（LibraryStorage）兜底，
- * Worker 采用纯无状态零数据留存架构，服务端不设持久化存储，
- * 所以这里没有缓存兜底 —— 拿不到就是拿不到，如实返回。
- */
 async function findLastReserve(ctx: ToolContext): Promise<LastReserve | null> {
-  const index = await runWithSession(ctx.env, ctx.credentials, async (context) => {
-    await seedSeatSession(context.session, ctx.log);
-    return await fetchSeatIndex(context.session);
-  });
-  if (index.curReserves.length > 0) return { reserve: index.curReserves[0] };
-  if (index.nearReserves.length > 0) return { reserve: index.nearReserves[0] };
+  const data = await callRelayApi<any>(ctx, '/api/library/seats');
+  const curReserves = Array.isArray(data?.index?.curReserves) ? data.index.curReserves : [];
+  if (curReserves.length > 0) return { reserve: curReserves[0] };
+  const nearReserves = Array.isArray(data?.index?.nearReserves) ? data.index.nearReserves : [];
+  if (nearReserves.length > 0) return { reserve: nearReserves[0] };
   return null;
 }
 
@@ -209,7 +184,7 @@ function createReserveTool(): ToolDefinition {
         if (availableStartSlots(day).length === 0 && days.length > 1) day = days[1];
       }
 
-      // 3. 校验并计算预约时间段（与 Dart 一致：不合法就用默认时段覆盖）
+      // 3. 校验并计算预约时间段
       const now = new Date();
       if (!isValidRange(day, startTime, endTime, now)) {
         const fallbackStart = defaultStartTime(day, now);
@@ -248,32 +223,32 @@ function createReserveTool(): ToolDefinition {
             dayLabel,
             startTime: finalStart,
             endTime: finalEnd,
-            isDefaultedFromLastSeat,
           },
         };
         return textResult(JSON.stringify(pending, null, 2), pending);
       }
 
-      // 5. 已确认：真正提交
+      // 5. 已确认：真正提交预约
       try {
-        const reserve = await runWithSession(ctx.env, ctx.credentials, async (context) => {
-          await seedSeatSession(context.session, ctx.log);
-          return await submitReservation(context.session, {
+        const res = await callRelayApi<any>(ctx, '/api/library/seats/reserve', {
+          method: 'POST',
+          body: JSON.stringify({
             roomId: finalRoomId,
             seatNum: finalSeatNum,
             day: finalDay,
             startTime: finalStart,
             endTime: finalEnd,
-          });
+          }),
         });
+        const reserve = res?.reserve || res;
         const payload = {
           status: 'success',
           message: '图书馆座位预约成功！',
           reservation: {
             id: reserve.id,
-            roomName: fullRoomName(reserve) !== '' ? fullRoomName(reserve) : roomName,
-            roomId: reserve.roomId,
-            seatNum: reserve.seatNum,
+            roomName: roomName !== '' ? roomName : fullRoomName(reserve),
+            roomId: finalRoomId,
+            seatNum: finalSeatNum,
             day: finalDay,
             dayLabel,
             startTime: finalStart,
@@ -378,7 +353,6 @@ function createQuickReserveTool(): ToolDefinition {
         }
       }
       if (!isValidRange(day, startTime, endTime, now)) {
-        // Dart 会把不合法的时段直接提交给服务端；这里提前拦住，避免无意义的写请求
         return errorResult(
           `${day} ${startTime}-${endTime} 不是可预约时段（需为 07:00-22:00 之间的整点/半点，且晚于当前时间）。`,
         );
@@ -394,15 +368,15 @@ function createQuickReserveTool(): ToolDefinition {
       let matchedDuration = '';
       if (roomId === null || roomId <= 0 || seatNum === '') {
         try {
-          const matched = await runWithSession(ctx.env, ctx.credentials, async (context) => {
-            await seedSeatSession(context.session, ctx.log);
-            return await matchSeat(context.session, {
+          const matched = await callRelayApi<any>(ctx, '/api/library/seats/match', {
+            method: 'POST',
+            body: JSON.stringify({
               startTime,
               endTime,
               firstLevelName: '图书馆',
               secondLevelName: secondLevel,
               thirdLevelName: thirdLevel,
-            });
+            }),
           });
           roomId = matched.roomId;
           seatNum = matched.seatNum;
@@ -449,16 +423,18 @@ function createQuickReserveTool(): ToolDefinition {
 
       // 6. 已确认：真正提交快速预约（写操作）
       try {
-        const reserve = await runWithSession(ctx.env, ctx.credentials, async (context) => {
-          await seedSeatSession(context.session, ctx.log);
-          return await submitQuickReservation(context.session, {
+        const res = await callRelayApi<any>(ctx, '/api/library/seats/reserve', {
+          method: 'POST',
+          body: JSON.stringify({
             roomId: finalRoomId,
             seatNum: finalSeatNum,
             day: finalDay,
             startTime: finalStart,
             endTime: finalEnd,
-          });
+            isQuick: true,
+          }),
         });
+        const reserve = res?.reserve || res;
         const payload = {
           status: 'success',
           message: '图书馆座位快速预约成功！',
@@ -517,7 +493,7 @@ function createSearchBooksTool(): ToolDefinition {
       required: ['keyword'],
       additionalProperties: false,
     },
-    async handler(args, _ctx: ToolContext) {
+    async handler(args, ctx: ToolContext) {
       const keyword = strArg(args['keyword']);
       if (keyword === '') return errorResult('请提供有效的检索关键词');
 
@@ -525,11 +501,15 @@ function createSearchBooksTool(): ToolDefinition {
       if (!(SEARCH_TYPES as readonly string[]).includes(searchType)) {
         return errorResult(`searchType 必须是 ${SEARCH_TYPES.join(' / ')} 之一`);
       }
-      const maxPages = intArg(args['maxPages']) ?? DEFAULT_MAX_PAGES;
 
       try {
-        const result = await searchLibraryBooks({ keyword, searchType, maxPages });
-        const books = result.books.map((book) => ({
+        const query = new URLSearchParams({
+          keyword,
+          type: searchType,
+        }).toString();
+        const result = await callRelayApi<any>(ctx, `/api/library/books?${query}`);
+        const rawBooks = Array.isArray(result?.books) ? result.books : [];
+        const books = rawBooks.map((book: any) => ({
           title: book.title,
           author: book.author,
           callNumber: book.callNumber,
@@ -541,8 +521,8 @@ function createSearchBooksTool(): ToolDefinition {
         const payload = {
           keyword,
           searchType,
-          totalCount: result.totalCount,
-          totalPages: result.totalPages,
+          totalCount: result?.totalCount ?? books.length,
+          totalPages: result?.totalPages ?? 1,
           bookCount: books.length,
           books,
         };
@@ -594,46 +574,35 @@ function createBookDetailTool(): ToolDefinition {
       },
       additionalProperties: false,
     },
-    async handler(args, _ctx: ToolContext) {
+    async handler(args, ctx: ToolContext) {
       let detailParam = strArg(args['detailParam']);
       let title = strArg(args['title']);
-      let author = strArg(args['author']);
-      let publisher = strArg(args['publisher']);
-      let callNumber = strArg(args['callNumber']);
 
       try {
-        // 没给 detailParam 就先检索一次，用首条结果的参数查详情
         if (detailParam === '') {
           const query = title !== '' ? title : strArg(args['keyword']);
           if (query === '') {
             return errorResult('请提供 detailParam 或书名 title 以查询图书详情');
           }
 
-          const search = await searchLibraryBooks({
-            keyword: query,
-            searchType: 'title',
-            maxPages: DEFAULT_MAX_PAGES,
-          });
-          if (search.books.length === 0) {
+          const q = new URLSearchParams({ keyword: query, type: 'title' }).toString();
+          const search = await callRelayApi<any>(ctx, `/api/library/books?${q}`);
+          const books = Array.isArray(search?.books) ? search.books : [];
+          if (books.length === 0) {
             return errorResult(`未在图书馆检索到与 "${query}" 匹配的图书`);
           }
 
-          const first = search.books[0];
+          const first = books[0];
           detailParam = first.detailParam;
-          if (title === '') title = first.title;
-          if (author === '') author = first.author;
-          if (publisher === '') publisher = first.publisher;
-          if (callNumber === '') callNumber = first.callNumber;
         }
 
-        const detail = await fetchLibraryBookDetail({
-          detailParam,
-          title,
-          author,
-          publisher,
-        });
-
-        const holdings = detail.holdings.map((holding) => ({
+        const detailRes = await callRelayApi<any>(
+          ctx,
+          `/api/library/books/detail?detailParam=${encodeURIComponent(detailParam)}`,
+        );
+        const detail = detailRes?.detail || detailRes;
+        const rawHoldings = Array.isArray(detail?.holdings) ? detail.holdings : [];
+        const holdings = rawHoldings.map((holding: any) => ({
           barcode: holding.barcode,
           volume: holding.volume,
           accessionNo: holding.accessionNo,
@@ -659,7 +628,7 @@ function createBookDetailTool(): ToolDefinition {
           summary: detail.summary,
           catalogItems: effectiveCatalogItems(detail),
           totalHoldings: holdings.length,
-          availableHoldings: holdings.filter((holding) => holding.isAvailable).length,
+          availableHoldings: holdings.filter((holding: any) => holding.isAvailable).length,
           holdings,
         };
         return textResult(JSON.stringify(payload, null, 2), payload);
@@ -672,7 +641,6 @@ function createBookDetailTool(): ToolDefinition {
 
 // ---- 汇总 ----
 
-/** 生成 8 个图书馆工具（含 3 个别名，别名与主名共用同一个 handler）。 */
 export function createLibraryTools(): ToolDefinition[] {
   const lastSeat = createLastSeatTool();
   const reserve = createReserveTool();
@@ -704,7 +672,6 @@ export function createLibraryTools(): ToolDefinition[] {
   ];
 }
 
-/** 供测试与诊断：图书馆相关工具名清单。 */
 export const LIBRARY_TOOL_NAMES = [
   'query_library_last_seat',
   'reserve_library_seat',

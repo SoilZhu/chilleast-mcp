@@ -1,45 +1,32 @@
 /**
  * 报修平台工具（bxpt.hunau.edu.cn）。
+ * 迁移至 api.chilleast.soilzhu.su/api/campus/repair/*。
  *
  * 对齐 ChillEast `lib/core/mcp/tools/repair_tool.dart`：
- * 工具名、参数名、两阶段确认（`confirmed`）语义都保持一致。
- *
- * 唯一的入参改动：Dart 用设备上的本地图片路径（`image_path` / `image_paths`），
- * 服务端没有文件系统，改成 `imageBase64` / `imageUrl`（详见 submit_repair_order 的描述）。
+ * 工具名、参数名、两阶段确认（`confirmed`）语义保持一致。
  */
 
 import { errorResult, textResult } from '../mcp/protocol';
 import type { McpToolResult } from '../mcp/protocol';
 import type { ToolContext, ToolDefinition } from '../mcp/registry';
-import { runWithSession, type SessionContext } from '../auth/session-manager';
+import { callRelayApi } from '../api/client';
 import {
   canCancelRepairOrder,
-  connectRepair,
-  decodeImageBase64,
-  downloadImage,
   formatChinaDate,
   formatChinaIso,
-  isChoiceField,
-  isDateField,
-  isUploadField,
-  parseDateToTimestamp,
   resolveRepairCatalog,
-  type RepairClient,
-  type RepairForm,
-  type RepairImage,
   type RepairOrder,
 } from '../school/hunau/bxpt';
-
-/** 预约维修时段的默认字典类型（Dart 里的兜底 referenceType）。 */
-const DEFAULT_TIME_LOOKUP = '3965f192-b6ed-11eb-8b80-af0eafc5dd38';
 
 function stringArg(args: Record<string, unknown>, key: string): string {
   const value = args[key];
   return typeof value === 'string' ? value : '';
 }
 
-/** Dart `_formatOrder`：只暴露模型需要的字段，时间格式化成中国时区的 YYYY/MM/DD。 */
-function formatOrder(order: RepairOrder): Record<string, unknown> {
+function formatOrder(order: any): Record<string, unknown> {
+  const createdAt = order.createdAtMs !== undefined
+    ? (order.createdAtMs === null ? null : formatChinaDate(order.createdAtMs))
+    : order.createdAt ?? null;
   return {
     id: order.id,
     code: order.code,
@@ -47,158 +34,20 @@ function formatOrder(order: RepairOrder): Record<string, unknown> {
     catalog: order.catalog,
     department: order.department,
     status: order.status,
-    createdAt: order.createdAtMs === null ? null : formatChinaDate(order.createdAtMs),
+    createdAt,
     description: order.description,
   };
 }
 
-/** 中国时区的今天，`YYYY/MM/DD`（Dart 用设备本地日期）。 */
 function todayInChina(): string {
   return formatChinaDate(Date.now());
-}
-
-function identityOf(context: SessionContext): {
-  realName: string;
-  username: string;
-  userId: string;
-} {
-  return {
-    realName: context.identity?.realName ?? '',
-    username: context.identity?.username ?? '',
-    userId: context.identity?.userId ?? '',
-  };
 }
 
 function render(payload: Record<string, unknown>): McpToolResult {
   return textResult(JSON.stringify(payload, null, 2), payload);
 }
 
-/**
- * 按字段配置填充提交值（Dart `RepairSubmitTool` 里的 4.2 循环）。
- * 顺序与判据逐条对应，选择器类字段会去拉候选项做关键词匹配。
- */
-async function collectSubmitValues(
-  client: RepairClient,
-  form: RepairForm,
-  options: {
-    location: string;
-    description: string;
-    title: string;
-    phone: string;
-    appointmentDate: string;
-    appointmentTime: string;
-    uploadedCount: number;
-  },
-): Promise<Record<string, unknown>> {
-  const values: Record<string, unknown> = {};
-
-  for (const field of form.fields) {
-    if (field.hidden || field.readonly) continue;
-
-    // 附件字段：传已上传的张数
-    if (isUploadField(field)) {
-      values[field.name] = options.uploadedCount;
-      continue;
-    }
-
-    // 预约日期
-    if (isDateField(field) || field.name === 'yyrq') {
-      values[field.name] =
-        parseDateToTimestamp(options.appointmentDate) ?? options.appointmentDate;
-      continue;
-    }
-
-    // 预约时间段
-    if (field.name === 'yywxsj') {
-      if (options.appointmentTime !== '') {
-        values[field.name] = options.appointmentTime;
-      } else {
-        // 未指定就取字典里的第一个可用时段（Dart 的兜底是 14_15）
-        const choices = await client.lookup(field.referenceType ?? DEFAULT_TIME_LOOKUP);
-        values[field.name] = choices.length > 0 ? choices[0].id : '14_15';
-      }
-      continue;
-    }
-
-    // 手机号
-    if (field.name === 'sjhm' || field.label.includes('手机') || field.label.includes('电话')) {
-      values[field.name] =
-        options.phone !== ''
-          ? options.phone
-          : (form.initialValues[field.name] ?? client.account.username);
-      continue;
-    }
-
-    // 姓名
-    if (field.name === 'xm' || field.label.includes('姓名')) {
-      values[field.name] = form.initialValues[field.name] ?? client.account.realName;
-      continue;
-    }
-
-    // 详细位置 / 房间号
-    if (
-      field.name === 'xxwzhfjy' ||
-      field.label.includes('详细位置') ||
-      field.label.includes('房间号')
-    ) {
-      values[field.name] = options.location !== '' ? options.location : options.description;
-      continue;
-    }
-
-    // 问题描述 / 补充说明
-    if (
-      field.name === 'wtmsh' ||
-      field.name === 'bchshm' ||
-      field.label.includes('问题描述') ||
-      field.label.includes('补充说明')
-    ) {
-      values[field.name] = options.description;
-      continue;
-    }
-
-    // 工单标题
-    if (field.name === 'title' || field.label.includes('标题')) {
-      values[field.name] = options.title;
-      continue;
-    }
-
-    // 其余选择器（区域、楼栋、项目、设施等）：按地点/描述关键词尽量选中
-    if (isChoiceField(field)) {
-      try {
-        const choices = await client.choicesForField(field);
-        if (choices.length > 0) {
-          const searchContext = `${options.location} ${options.description}`;
-          const matched = choices.find(
-            (choice) =>
-              searchContext.includes(choice.label) || choice.label.includes(options.location),
-          );
-          values[field.name] = (matched ?? choices[0]).id;
-        }
-      } catch {
-        // 候选项拿不到就留给服务端校验
-      }
-    }
-  }
-
-  return values;
-}
-
-/** 收集工具入参里的图片（base64 优先，其次 URL；两者都给就都上传）。 */
-async function collectImages(args: Record<string, unknown>): Promise<RepairImage[]> {
-  const fallbackName = stringArg(args, 'imageName').trim() || `repair-${Date.now()}`;
-  const images: RepairImage[] = [];
-
-  const base64Input = stringArg(args, 'imageBase64').trim();
-  if (base64Input !== '') images.push(decodeImageBase64(base64Input, fallbackName));
-
-  const urlInput = stringArg(args, 'imageUrl').trim();
-  if (urlInput !== '') images.push(await downloadImage(urlInput, fallbackName));
-
-  return images;
-}
-
 export function createRepairTools(): ToolDefinition[] {
-  // ---- query_repairs / query_repair_orders（同一实现的别名） ----
   const listInputSchema = {
     type: 'object',
     properties: {
@@ -222,31 +71,26 @@ export function createRepairTools(): ToolDefinition[] {
     const requested = stringArg(args, 'status').trim();
     const status = requested === '' ? '处理中' : requested;
 
-    return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-      const client = await connectRepair(context.session, identityOf(context));
+    let orders: any[] = [];
+    if (status.includes('已完成') || status.includes('完成')) {
+      const res = await callRelayApi<any[]>(toolContext, '/api/campus/repair/orders?ongoing=false');
+      orders = Array.isArray(res) ? res : [];
+    } else if (status.includes('全')) {
+      const [ongoing, finished] = await Promise.all([
+        callRelayApi<any[]>(toolContext, '/api/campus/repair/orders?ongoing=true').catch(() => []),
+        callRelayApi<any[]>(toolContext, '/api/campus/repair/orders?ongoing=false').catch(() => []),
+      ]);
+      orders = [...(Array.isArray(ongoing) ? ongoing : []), ...(Array.isArray(finished) ? finished : [])];
+    } else {
+      const res = await callRelayApi<any[]>(toolContext, '/api/campus/repair/orders?ongoing=true');
+      orders = Array.isArray(res) ? res : [];
+    }
 
-      let orders: RepairOrder[];
-      if (status.includes('草稿')) {
-        orders = await client.fetchOrders({ ongoing: false, isDraft: true });
-      } else if (status.includes('已完成') || status.includes('完成')) {
-        orders = await client.fetchOrders({ ongoing: false });
-      } else if (status.includes('全')) {
-        const [ongoing, finished, drafts] = await Promise.all([
-          client.fetchOrders({ ongoing: true }),
-          client.fetchOrders({ ongoing: false }),
-          client.fetchOrders({ ongoing: false, isDraft: true }),
-        ]);
-        orders = [...ongoing, ...finished, ...drafts];
-      } else {
-        orders = await client.fetchOrders({ ongoing: true });
-      }
-
-      return render({
-        success: true,
-        count: orders.length,
-        status,
-        orders: orders.map(formatOrder),
-      });
+    return render({
+      success: true,
+      count: orders.length,
+      status,
+      orders: orders.map(formatOrder),
     });
   }
 
@@ -257,7 +101,6 @@ export function createRepairTools(): ToolDefinition[] {
     handler: listHandler,
   };
 
-  /** 别名：与 `query_repairs` 共用同一个 handler，行为完全一致。 */
   const listAliasTool: ToolDefinition = {
     name: 'query_repair_orders',
     description: `${listDescription}（与 query_repairs 等价的别名。）`,
@@ -265,7 +108,6 @@ export function createRepairTools(): ToolDefinition[] {
     handler: listHandler,
   };
 
-  // ---- query_repair_detail ----
   const detailTool: ToolDefinition = {
     name: 'query_repair_detail',
     description:
@@ -285,37 +127,38 @@ export function createRepairTools(): ToolDefinition[] {
       const id = stringArg(args, 'id').trim();
       if (id === '') return errorResult('请提供报修工单 id');
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        const client = await connectRepair(context.session, identityOf(context));
-        const detail = await client.fetchOrderDetailById(id);
+      const detail = await callRelayApi<any>(
+        toolContext,
+        `/api/campus/repair/orders/detail?id=${encodeURIComponent(id)}`,
+      );
 
-        return render({
-          success: true,
-          order: formatOrder(detail),
-          applicant: detail.applicant,
-          phone: detail.phone,
-          handler: detail.handler,
-          handlerDepartment: detail.handlerDepartment,
-          handleResult: detail.handleResult,
-          currentNode: detail.currentNode,
-          activityLogs: detail.logs.map((log) => ({
-            time: log.timeMs === null ? null : formatChinaIso(log.timeMs),
-            userName: log.userName,
-            description: log.description,
-          })),
-          attachments: detail.attachments.map((attachment) => ({
-            id: attachment.id,
-            fileName: attachment.fileName,
-            downloadUrl: attachment.downloadUrl,
-            createTime:
-              attachment.createTimeMs === null ? null : formatChinaIso(attachment.createTimeMs),
-          })),
-        });
+      const logs = Array.isArray(detail?.logs) ? detail.logs : [];
+      const attachments = Array.isArray(detail?.attachments) ? detail.attachments : [];
+
+      return render({
+        success: true,
+        order: formatOrder(detail),
+        applicant: detail.applicant,
+        phone: detail.phone,
+        handler: detail.handler,
+        handlerDepartment: detail.handlerDepartment,
+        handleResult: detail.handleResult,
+        currentNode: detail.currentNode,
+        activityLogs: logs.map((log: any) => ({
+          time: typeof log.timeMs === 'number' ? formatChinaIso(log.timeMs) : log.time ?? null,
+          userName: log.userName,
+          description: log.description,
+        })),
+        attachments: attachments.map((att: any) => ({
+          id: att.id,
+          fileName: att.fileName,
+          downloadUrl: att.downloadUrl,
+          createTime: typeof att.createTimeMs === 'number' ? formatChinaIso(att.createTimeMs) : att.createTime ?? null,
+        })),
       });
     },
   };
 
-  // ---- submit_repair_order ----
   const submitTool: ToolDefinition = {
     name: 'submit_repair_order',
     description:
@@ -395,14 +238,14 @@ export function createRepairTools(): ToolDefinition[] {
       const phone = stringArg(args, 'phone').trim();
       const appointmentDate = stringArg(args, 'appointment_date').trim();
       const appointmentTime = stringArg(args, 'appointment_time').trim();
+      const imageBase64 = stringArg(args, 'imageBase64').trim();
+      const imageName = stringArg(args, 'imageName').trim();
       const confirmed = args['confirmed'] === true;
 
       const catalog = resolveRepairCatalog(catalogInput === '' ? '后勤报修' : catalogInput);
       const isLogistics = catalog.title.includes('后勤');
 
-      // 图片先落地成字节（Dart 在这一步校验本地文件是否存在）
-      const images = await collectImages(args);
-      if (isLogistics && images.length === 0) {
+      if (isLogistics && !imageBase64 && !stringArg(args, 'imageUrl').trim()) {
         return errorResult(
           '【后勤报修严格要求提供现场图片】：后勤报修系统要求必须上传现场故障照片！' +
             '请引导用户发送故障照片，并把图片以 imageBase64（或 imageUrl）传入后再提交。',
@@ -412,74 +255,57 @@ export function createRepairTools(): ToolDefinition[] {
       const resolvedDate =
         appointmentDate === '' ? todayInChina() : appointmentDate.replace(/-/g, '/');
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        const realName = context.identity?.realName ?? '';
-        const resolvedTitle =
-          userTitle !== ''
-            ? userTitle
-            : `${realName === '' ? '用户' : realName}的${catalog.title}`;
+      const resolvedTitle =
+        userTitle !== '' ? userTitle : `用户的${catalog.title}`;
 
-        // 未确认：只回预览，不碰报修平台
-        if (!confirmed) {
-          return render({
-            success: true,
-            needConfirmation: true,
-            preview: {
-              catalog: catalog.title,
-              department: catalog.department,
-              title: resolvedTitle,
-              location: location !== '' ? location : '(未特别指定)',
-              description,
-              appointmentDate: resolvedDate,
-              appointmentTime: appointmentTime !== '' ? appointmentTime : '默认维修时段',
-              phone: phone !== '' ? phone : '(使用学号绑定手机号)',
-              hasImage: images.length > 0,
-              imageCount: images.length,
-              imageNames: images.map((image) => image.fileName),
-            },
-            message:
-              '报修工单已整理就绪。请向用户展示上述预览信息（包括报修分类、故障地点、问题描述、预约时间及图片）。' +
-              '经用户明确确认同意后，将 confirmed 设为 true 再次调用以正式提交。',
-          });
-        }
+      if (!confirmed) {
+        return render({
+          success: true,
+          needConfirmation: true,
+          preview: {
+            catalog: catalog.title,
+            department: catalog.department,
+            title: resolvedTitle,
+            location: location !== '' ? location : '(未特别指定)',
+            description,
+            appointmentDate: resolvedDate,
+            appointmentTime: appointmentTime !== '' ? appointmentTime : '默认维修时段',
+            phone: phone !== '' ? phone : '(使用学号绑定手机号)',
+            hasImage: Boolean(imageBase64),
+            imageName: imageName || null,
+          },
+          message:
+            '报修工单已整理就绪。请向用户展示上述预览信息（包括报修分类、故障地点、问题描述、预约时间及图片）。' +
+            '经用户明确确认同意后，将 confirmed 设为 true 再次调用以正式提交。',
+        });
+      }
 
-        const client = await connectRepair(context.session, identityOf(context));
-        const form = await client.loadForm(catalog);
-
-        // 上传附件（字段名取自表单里的上传控件）
-        let uploadedCount = 0;
-        const uploadField = form.fields.find((field) => isUploadField(field));
-        if (uploadField !== undefined) {
-          for (const image of images) {
-            await client.uploadAttachment(form, uploadField.name, image);
-            uploadedCount += 1;
-          }
-        }
-
-        const values = await collectSubmitValues(client, form, {
-          location,
-          description,
+      const submitRes = await callRelayApi<any>(toolContext, '/api/campus/repair/submit', {
+        method: 'POST',
+        body: JSON.stringify({
+          catalog: catalog.title,
           title: resolvedTitle,
+          description,
+          location,
           phone,
           appointmentDate: resolvedDate,
           appointmentTime,
-          uploadedCount,
-        });
-        await client.submit(form, values, false);
+          imageBase64: imageBase64 || undefined,
+          imageName: imageName || undefined,
+        }),
+      });
 
-        return render({
-          success: true,
-          message: '报修工单已成功提交！',
-          catalog: catalog.title,
-          title: resolvedTitle,
-          instanceId: form.instanceId,
-          uploadedImages: uploadedCount,
-        });
+      return render({
+        success: true,
+        message: '报修工单已成功提交！',
+        catalog: catalog.title,
+        title: resolvedTitle,
+        instanceId: submitRes?.instanceId,
+        order: submitRes,
       });
     },
   };
 
-  // ---- cancel_repair_order ----
   const cancelTool: ToolDefinition = {
     name: 'cancel_repair_order',
     description:
@@ -508,37 +334,40 @@ export function createRepairTools(): ToolDefinition[] {
       }
       const confirmed = args['confirmed'] === true;
 
-      return await runWithSession(toolContext.env, toolContext.credentials, async (context) => {
-        const client = await connectRepair(context.session, identityOf(context));
-        const order = await client.fetchOrderDetailById(orderId);
+      const order = await callRelayApi<any>(
+        toolContext,
+        `/api/campus/repair/orders/detail?id=${encodeURIComponent(orderId)}`,
+      );
 
-        // 当前节点没有「取消」动作就不能取消（派工处理之后就没了）
-        if (!canCancelRepairOrder(order)) {
-          const label = order.code !== '' ? order.code : orderId;
-          const statusLabel = order.status !== '' ? order.status : '当前状态';
-          return errorResult(
-            `工单 ${label} (${statusLabel}) 当前不支持取消。只有在派工处理前的工单方可取消。`,
-          );
-        }
+      if (!canCancelRepairOrder(order as RepairOrder)) {
+        const label = order.code !== '' ? order.code : orderId;
+        const statusLabel = order.status !== '' ? order.status : '当前状态';
+        return errorResult(
+          `工单 ${label} (${statusLabel}) 当前不支持取消。只有在派工处理前的工单方可取消。`,
+        );
+      }
 
-        if (!confirmed) {
-          return render({
-            status: 'confirmation_required',
-            requires_confirmation: true,
-            message:
-              '取消工单是不可逆操作。请向用户展示以下待取消工单的信息，并询问是否确认取消。' +
-              '在用户明确确认后，再次调用此工具并将 confirmed 设为 true。',
-            order: formatOrder(order),
-          });
-        }
-
-        const success = await client.cancelOrder(order);
-        if (!success) return errorResult('取消工单失败，平台未返回成功状态。');
+      if (!confirmed) {
         return render({
-          success: true,
-          message: `工单 ${order.code !== '' ? order.code : orderId} 已成功取消。`,
+          status: 'confirmation_required',
+          requires_confirmation: true,
+          message:
+            '取消工单是不可逆操作。请向用户展示以下待取消工单的信息，并询问是否确认取消。' +
+            '在用户明确确认后，再次调用此工具并将 confirmed 设为 true。',
           order: formatOrder(order),
         });
+      }
+
+      const res = await callRelayApi<any>(toolContext, '/api/campus/repair/cancel', {
+        method: 'POST',
+        body: JSON.stringify({ orderId, reason: '申请取消' }),
+      });
+
+      return render({
+        success: true,
+        message: `工单 ${order.code !== '' ? order.code : orderId} 已成功取消。`,
+        order: formatOrder(order),
+        result: res,
       });
     },
   };

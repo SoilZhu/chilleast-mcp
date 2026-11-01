@@ -1,24 +1,14 @@
 /**
  * MCP Tool: 考试日程与安排查询 (query_exams / query_exam_schedule)
- *
- * 对齐 ChillEast `lib/core/mcp/tools/exam_tool.dart`：
- * 同一份实现注册两个工具名（`query_exam_schedule` 是 `query_exams` 的别名），
- * 行为完全一致。数据实时来自超星 mooc1-api，不做本地缓存。
+ * 迁移至 api.chilleast.soilzhu.su/api/academic/exams。
  */
 
 import { textResult } from '../mcp/protocol';
 import type { McpToolResult } from '../mcp/protocol';
 import type { ToolContext, ToolDefinition } from '../mcp/registry';
-import { runWithSession } from '../auth/session-manager';
-import {
-  fetchExamSchedules,
-  isCurrentSemester,
-  type ExamFetchResult,
-  type ExamSchedule,
-} from '../school/hunau/chaoxing-study';
-import { formatBeijing, toIsoUtc } from '../school/hunau/time';
+import { callRelayApi } from '../api/client';
+import { isCurrentSemester } from '../school/hunau/chaoxing-study';
 
-/** 考试列表页参数 Schema —— 与 Dart 的 inputSchema 一致。 */
 const EXAM_INPUT_SCHEMA = {
   type: 'object',
   properties: {
@@ -41,40 +31,7 @@ const EXAM_INPUT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-interface ExamJson extends Record<string, unknown> {
-  id: string;
-  title: string;
-  courseName: string;
-  time: string;
-  timeLocal: string;
-  status: string;
-  isPast: boolean;
-  studentName: string;
-  studentId: string;
-  detailUrl: string;
-}
-
-function examToJson(exam: ExamSchedule, nowMs: number): ExamJson {
-  const isPast = exam.timeMs < nowMs;
-  return {
-    id: exam.id,
-    title: exam.title,
-    courseName: exam.courseName,
-    time: toIsoUtc(exam.timeMs),
-    timeLocal: formatBeijing(exam.timeMs),
-    // Dart: e.status.isNotEmpty ? e.status : (isPast ? '已结束' : '待考')
-    status: exam.status !== '' ? exam.status : isPast ? '已结束' : '待考',
-    isPast,
-    studentName: exam.studentName,
-    studentId: exam.studentId,
-    detailUrl: exam.detailUrl,
-    allTimes: exam.allTimesMs.map((ms) => formatBeijing(ms)),
-    rawTimeStrs: exam.rawTimeStrs,
-  };
-}
-
 export function createExamTools(): ToolDefinition[] {
-  // 与 ChillEast 一样：同一个实现注册两个工具名（别名行为必须完全一致）
   const handler = async (
     args: Record<string, unknown>,
     ctx: ToolContext,
@@ -82,51 +39,49 @@ export function createExamTools(): ToolDefinition[] {
     const currentSemesterOnly = args['currentSemesterOnly'] !== false;
     const keyword = typeof args['keyword'] === 'string' ? args['keyword'].trim() : '';
 
-    const fetched: ExamFetchResult = await runWithSession(
-      ctx.env,
-      ctx.credentials,
-      async (context) => fetchExamSchedules(context.session),
+    const query = new URLSearchParams({
+      ...(keyword ? { keyword } : {}),
+    }).toString();
+
+    const rawList = await callRelayApi<any[]>(
+      ctx,
+      `/api/academic/exams${query ? `?${query}` : ''}`,
     );
+
+    let exams = Array.isArray(rawList) ? rawList : [];
 
     const nowMs = Date.now();
-    let exams = fetched.exams;
-
     if (currentSemesterOnly) {
-      exams = exams.filter((exam) => isCurrentSemester(exam.timeMs, nowMs));
-    }
-    if (keyword !== '') {
-      const lowered = keyword.toLowerCase();
-      exams = exams.filter(
-        (exam) =>
-          exam.title.toLowerCase().includes(lowered) ||
-          exam.courseName.toLowerCase().includes(lowered),
-      );
+      exams = exams.filter((exam) => {
+        const timeMs = typeof exam.timeMs === 'number'
+          ? exam.timeMs
+          : exam.time ? new Date(exam.time).getTime() : nowMs;
+        return isCurrentSemester(timeMs, nowMs);
+      });
     }
 
-    const sorted = [...exams].sort((a, b) => a.timeMs - b.timeMs);
-    const examList = sorted.map((exam) => examToJson(exam, nowMs));
+    if (exams.length === 0) {
+      const hint =
+        keyword !== ''
+          ? `没有找到匹配关键词 "${keyword}" 的考试。`
+          : currentSemesterOnly
+            ? '本学期暂无考试日程（超星系统中未查询到相关科目安排）。'
+            : '未查询到任何考试日程。';
+      return textResult(hint, { count: 0, exams: [] });
+    }
 
-    const semesterDesc = currentSemesterOnly ? '（本学期）' : '（全量）';
-    return textResult(
-      examList.length === 0
-        ? `没有查询到考试${semesterDesc}。`
-        : `共查询到 ${examList.length} 门考试${semesterDesc}：\n` + JSON.stringify(examList, null, 2),
-      {
-        summary: `共查询到 ${examList.length} 门考试${semesterDesc}`,
-        total: examList.length,
-        currentSemesterOnly,
-        exams: examList,
-        // 列表里有、但详情页没解析出时间的考试（不静默丢弃）
-        unresolved: fetched.unresolved,
-      },
-    );
+    return textResult(`共 ${exams.length} 门考试：\n${JSON.stringify(exams, null, 2)}`, {
+      count: exams.length,
+      currentSemesterOnly,
+      keyword: keyword === '' ? null : keyword,
+      exams,
+    });
   };
 
   const makeTool = (name: string): ToolDefinition => ({
     name,
     description:
-      '查询学生的超星/学习通考试日程与考试安排。支持按本学期筛选、关键词搜索；' +
-      '每场考试会读取详情页解析考试时间、姓名与学号。',
+      '查询学生的考试日程与考场安排（实时从超星学习通抓取）。默认仅查本学期；可传 keyword 过滤；返回考试名称、科目、时间与状态。',
     inputSchema: EXAM_INPUT_SCHEMA,
     handler,
   });

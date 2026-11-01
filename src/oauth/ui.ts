@@ -14,10 +14,53 @@
  * 左侧边界切过 cx=0 圆心，形成完美的左侧半圆切边效果，整条河流严格相位对齐。
  * 圆环内部全部保持透明（fill: none）。
  */
-const GREEN_LAYER_SVG = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1550 860' preserveAspectRatio='xMinYMax slice' fill='none'>` +
-  `<style>circle{fill:none;}</style>` +
-  `<rect width='1550' height='860' fill='#034933'/>` +
-  `<g fill='none' stroke='#08AB77' stroke-width='10'><circle cx='50' cy='860' r='30'/><circle cx='150' cy='860' r='30'/><circle cx='350' cy='860' r='30'/><circle cx='450' cy='860' r='30'/><circle cx='550' cy='860' r='30'/><circle cx='650' cy='860' r='30'/><circle cx='750' cy='860' r='30'/><circle cx='0' cy='774' r='30'/><circle cx='100' cy='774' r='30'/><circle cx='200' cy='774' r='30'/><circle cx='500' cy='774' r='30'/><circle cx='400' cy='774' r='30'/><circle cx='600' cy='774' r='30'/><circle cx='700' cy='774' r='30'/><circle cx='50' cy='688' r='30'/><circle cx='150' cy='688' r='30'/><circle cx='450' cy='688' r='30'/><circle cx='550' cy='688' r='30'/><circle cx='650' cy='688' r='30'/><circle cx='750' cy='688' r='30'/><circle cx='0' cy='602' r='30'/><circle cx='100' cy='602' r='30'/><circle cx='200' cy='602' r='30'/><circle cx='300' cy='602' r='30'/><circle cx='550' cy='516' r='30'/><circle cx='650' cy='516' r='30'/><circle cx='200' cy='430' r='30'/><circle cx='300' cy='430' r='30'/><circle cx='600' cy='430' r='30'/><circle cx='150' cy='344' r='30'/><circle cx='250' cy='344' r='30'/><circle cx='350' cy='344' r='30'/><circle cx='450' cy='344' r='30'/><circle cx='750' cy='344' r='30'/><circle cx='100' cy='258' r='30'/><circle cx='200' cy='258' r='30'/><circle cx='300' cy='258' r='30'/><circle cx='400' cy='258' r='30'/><circle cx='500' cy='258' r='30'/><circle cx='600' cy='258' r='30'/><circle cx='700' cy='258' r='30'/><circle cx='50' cy='172' r='30'/><circle cx='150' cy='172' r='30'/><circle cx='250' cy='172' r='30'/><circle cx='350' cy='172' r='30'/><circle cx='450' cy='172' r='30'/><circle cx='550' cy='172' r='30'/><circle cx='650' cy='172' r='30'/><circle cx='750' cy='172' r='30'/><circle cx='0' cy='86' r='30'/><circle cx='100' cy='86' r='30'/><circle cx='200' cy='86' r='30'/><circle cx='300' cy='86' r='30'/><circle cx='400' cy='86' r='30'/><circle cx='500' cy='86' r='30'/><circle cx='600' cy='86' r='30'/><circle cx='700' cy='86' r='30'/><circle cx='800' cy='86' r='30'/><circle cx='800' cy='258' r='30'/><circle cx='800' cy='430' r='30'/><circle cx='800' cy='602' r='30'/><circle cx='800' cy='774' r='30'/><circle cx='50' cy='0' r='30'/><circle cx='150' cy='0' r='30'/><circle cx='250' cy='0' r='30'/><circle cx='350' cy='0' r='30'/><circle cx='450' cy='0' r='30'/><circle cx='550' cy='0' r='30'/><circle cx='650' cy='0' r='30'/><circle cx='750' cy='0' r='30'/><circle cx='400' cy='430' r='30'/><circle cx='1400' cy='86' r='30'/><circle cx='1500' cy='86' r='30'/><circle cx='1450' cy='0' r='30'/><circle cx='1550' cy='0' r='30'/><circle cx='1550' cy='860' r='30'/><circle cx='1300' cy='774' r='30'/><circle cx='1500' cy='774' r='30'/><circle cx='850' cy='172' r='30'/><circle cx='950' cy='172' r='30'/><circle cx='1050' cy='172' r='30'/><circle cx='1150' cy='172' r='30'/><circle cx='900' cy='86' r='30'/><circle cx='1000' cy='86' r='30'/><circle cx='1100' cy='86' r='30'/><circle cx='1200' cy='86' r='30'/><circle cx='1300' cy='86' r='30'/><circle cx='850' cy='0' r='30'/><circle cx='950' cy='0' r='30'/><circle cx='1050' cy='0' r='30'/><circle cx='1150' cy='0' r='30'/><circle cx='1250' cy='0' r='30'/><circle cx='1350' cy='0' r='30'/><circle cx='900' cy='258' r='30'/><circle cx='1000' cy='258' r='30'/><circle cx='1100' cy='258' r='30'/><circle cx='1200' cy='258' r='30'/><circle cx='1300' cy='258' r='30'/><circle cx='1400' cy='258' r='30'/><circle cx='1500' cy='258' r='30'/><circle cx='1350' cy='688' r='30'/><circle cx='1450' cy='688' r='30'/><circle cx='1350' cy='172' r='30'/><circle cx='1450' cy='172' r='30'/><circle cx='1550' cy='172' r='30'/><circle cx='950' cy='860' r='30'/><circle cx='1050' cy='860' r='30'/><circle cx='1150' cy='860' r='30'/><circle cx='1250' cy='860' r='30'/><circle cx='1250' cy='172' r='30'/><circle cx='850' cy='860' r='30'/><circle cx='1350' cy='860' r='30'/><circle cx='1450' cy='860' r='30'/><circle cx='900' cy='774' r='30'/><circle cx='1000' cy='774' r='30'/><circle cx='1100' cy='774' r='30'/><circle cx='1400' cy='774' r='30'/><circle cx='850' cy='688' r='30'/><circle cx='950' cy='688' r='30'/><circle cx='1050' cy='688' r='30'/><circle cx='1150' cy='688' r='30'/><circle cx='1250' cy='688' r='30'/><circle cx='1550' cy='688' r='30'/><circle cx='900' cy='602' r='30'/><circle cx='1000' cy='602' r='30'/><circle cx='1100' cy='602' r='30'/><circle cx='1200' cy='602' r='30'/><circle cx='1300' cy='602' r='30'/><circle cx='1400' cy='602' r='30'/><circle cx='1500' cy='602' r='30'/><circle cx='850' cy='516' r='30'/><circle cx='950' cy='516' r='30'/><circle cx='1050' cy='516' r='30'/><circle cx='1150' cy='516' r='30'/><circle cx='1250' cy='516' r='30'/><circle cx='1350' cy='516' r='30'/><circle cx='1450' cy='516' r='30'/><circle cx='1550' cy='516' r='30'/><circle cx='900' cy='430' r='30'/><circle cx='1000' cy='430' r='30'/><circle cx='1100' cy='430' r='30'/><circle cx='1200' cy='430' r='30'/><circle cx='1300' cy='430' r='30'/><circle cx='1400' cy='430' r='30'/><circle cx='1500' cy='430' r='30'/><circle cx='850' cy='344' r='30'/><circle cx='950' cy='344' r='30'/><circle cx='1050' cy='344' r='30'/><circle cx='1150' cy='344' r='30'/><circle cx='1250' cy='344' r='30'/><circle cx='1350' cy='344' r='30'/><circle cx='1450' cy='344' r='30'/><circle cx='1550' cy='344' r='30'/><circle cx='1200' cy='774' r='30'/><circle cx='250' cy='688' r='30'/><circle cx='0' cy='430' r='30'/><circle cx='50' cy='516' r='30'/></g></svg>`;
+const GREEN_CIRCLES_COORDS: readonly [number, number][] = [
+  [50, 860], [150, 860], [350, 860], [450, 860], [550, 860], [650, 860], [750, 860], [0, 774], [100, 774], [200, 774],
+  [500, 774], [400, 774], [600, 774], [700, 774], [50, 688], [150, 688], [450, 688], [550, 688], [650, 688], [750, 688],
+  [0, 602], [100, 602], [200, 602], [300, 602], [550, 516], [650, 516], [200, 430], [300, 430], [600, 430], [150, 344],
+  [250, 344], [350, 344], [450, 344], [750, 344], [100, 258], [200, 258], [300, 258], [400, 258], [500, 258], [600, 258],
+  [700, 258], [50, 172], [150, 172], [250, 172], [350, 172], [450, 172], [550, 172], [650, 172], [750, 172], [0, 86],
+  [100, 86], [200, 86], [300, 86], [400, 86], [500, 86], [600, 86], [700, 86], [800, 86], [800, 258], [800, 430],
+  [800, 602], [800, 774], [50, 0], [150, 0], [250, 0], [350, 0], [450, 0], [550, 0], [650, 0], [750, 0],
+  [400, 430], [1400, 86], [1500, 86], [1450, 0], [1550, 0], [1550, 860], [1300, 774], [1500, 774], [850, 172], [950, 172],
+  [1050, 172], [1150, 172], [900, 86], [1000, 86], [1100, 86], [1200, 86], [1300, 86], [850, 0], [950, 0], [1050, 0],
+  [1150, 0], [1250, 0], [1350, 0], [900, 258], [1000, 258], [1100, 258], [1200, 258], [1300, 258], [1400, 258], [1500, 258],
+  [1350, 688], [1450, 688], [1350, 172], [1450, 172], [1550, 172], [950, 860], [1050, 860], [1150, 860], [1250, 860], [1250, 172],
+  [850, 860], [1350, 860], [1450, 860], [900, 774], [1000, 774], [1100, 774], [1400, 774], [850, 688], [950, 688], [1050, 688],
+  [1150, 688], [1250, 688], [1550, 688], [900, 602], [1000, 602], [1100, 602], [1200, 602], [1300, 602], [1400, 602], [1500, 602],
+  [850, 516], [950, 516], [1050, 516], [1150, 516], [1250, 516], [1350, 516], [1450, 516], [1550, 516], [900, 430], [1000, 430],
+  [1100, 430], [1200, 430], [1300, 430], [1400, 430], [1500, 430], [850, 344], [950, 344], [1050, 344], [1150, 344], [1250, 344],
+  [1350, 344], [1450, 344], [1550, 344], [1200, 774], [250, 688], [0, 430], [50, 516],
+];
+
+function buildGreenCirclesMarkup(): string {
+  return GREEN_CIRCLES_COORDS.map(([cx, cy], i) => {
+    // 基于圆心坐标与索引生成确定性伪随机数，保证每个圆的透明度区间、周期与相位完全独立
+    const s1 = Math.sin(cx * 0.017 + cy * 0.031 + i * 0.73) * 10000;
+    const r1 = s1 - Math.floor(s1);
+    const s2 = Math.cos(cx * 0.023 - cy * 0.041 + i * 0.57) * 10000;
+    const r2 = s2 - Math.floor(s2);
+    const s3 = Math.sin(cx * 0.039 + cy * 0.013 + i * 1.19) * 10000;
+    const r3 = s3 - Math.floor(s3);
+
+    // 呼吸周期在 2.5s ~ 5.5s 之间
+    const dur = (2.5 + r1 * 3.0).toFixed(2);
+    // 负延迟让各个圆在加载首帧即处于错落的明暗相位
+    const delay = (-r2 * Number(dur)).toFixed(2);
+    // 随机透明度下限在 0.15 ~ 0.40 之间
+    const minOp = (0.15 + r3 * 0.25).toFixed(2);
+    // 随机透明度上限在 0.75 ~ 1.00 之间
+    const maxOp = (0.75 + r1 * 0.25).toFixed(2);
+
+    return (
+      `<circle cx='${cx}' cy='${cy}' r='30' stroke-opacity='${minOp}'>` +
+      `<animate attributeName='stroke-opacity' values='${minOp};${maxOp};${minOp}' dur='${dur}s' begin='${delay}s' repeatCount='indefinite' calcMode='spline' keySplines='0.42 0 0.58 1;0.42 0 0.58 1'/>` +
+      `</circle>`
+    );
+  }).join('');
+}
+
+const GREEN_LAYER_SVG = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1550 860' preserveAspectRatio='xMinYMax slice' fill='none'><rect width='1550' height='860' fill='#034933'/></svg>`;
 
 const RIVER_LAYER_SVG = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1550 860' preserveAspectRatio='xMinYMax slice' fill='none'>` +
   `<style>circle{fill:none;}</style>` +
@@ -31,6 +74,15 @@ function toDataUri(svg: string): string {
 
 const GREEN_LAYER = toDataUri(GREEN_LAYER_SVG);
 const RIVER_LAYER = toDataUri(RIVER_LAYER_SVG);
+
+/**
+ * 绿色点阵内联 SVG 层：支持同步呼吸 SMIL 动效及 JavaScript 交互微位移。
+ */
+const GREEN_CIRCLES_SVG = `<svg viewBox='0 0 1550 860' preserveAspectRatio='xMinYMax slice' fill='none'>` +
+  `<style>circle{fill:none;}@media (prefers-reduced-motion: reduce){animate{display:none;}}</style>` +
+  `<g fill='none' stroke='#08AB77' stroke-width='10'>` +
+  buildGreenCirclesMarkup() +
+  `</g></svg>`;
 
 /**
  * 品牌区文字矢量图形（来自设计稿「东湖事， 自在事。.svg」）。
@@ -110,7 +162,14 @@ const BASE_CSS = `
   .page { display: grid; grid-template-columns: 1fr 1fr; min-height: 100vh; min-height: 100dvh; }
 
   /* ---- 左：品牌区 ---- */
-  .brand { position: relative; overflow: hidden; background: var(--brand-bg); }
+  .brand {
+    position: relative;
+    overflow: hidden;
+    background-color: var(--brand-bg);
+    background-image: ${GREEN_LAYER};
+    background-size: cover;
+    background-position: left bottom;
+  }
 
   /* 桌面端：左半屏钉在视口上，右半边滚动时不带动左侧品牌纹样 */
   @media (min-width: 881px) {
@@ -119,11 +178,13 @@ const BASE_CSS = `
   }
   .rings {
     position: absolute; inset: 0;
-    background-image: ${GREEN_LAYER};
-    background-size: cover;
-    background-position: left bottom;
-    background-repeat: no-repeat;
     pointer-events: none;
+    overflow: hidden;
+  }
+  .rings svg {
+    width: 100%;
+    height: 100%;
+    display: block;
   }
   .rings--river {
     background-image: ${RIVER_LAYER};
@@ -131,6 +192,7 @@ const BASE_CSS = `
     background-position: left bottom;
     background-repeat: no-repeat;
     pointer-events: none;
+    will-change: transform;
   }
   .slogan {
     position: absolute;
@@ -386,7 +448,7 @@ const BASE_CSS = `
 
 /** 左边那半屏：品牌区。两页共用。 */
 const BRAND_PANEL = `  <div class="brand">
-    <div class="rings" aria-hidden="true"></div>
+    <div class="rings" aria-hidden="true">${GREEN_CIRCLES_SVG}</div>
     <div class="rings rings--river" aria-hidden="true"></div>
     <div class="slogan" role="img" aria-label="东湖事，自在事。">${SLOGAN_SVG}</div>
   </div>`;
@@ -430,6 +492,152 @@ ${options.body}
       setTimeout(function() { btn.disabled = true; }, 0);
     }
   });
+
+  (function() {
+    if (typeof window === 'undefined') return;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    var brand = document.querySelector('.brand');
+    var svg = document.querySelector('.rings svg');
+    if (!brand || !svg) return;
+
+    var circleEls = svg.querySelectorAll('circle');
+    if (!circleEls.length) return;
+
+    var circles = [];
+    for (var i = 0; i < circleEls.length; i++) {
+      var el = circleEls[i];
+      circles.push({
+        el: el,
+        cx: parseFloat(el.getAttribute('cx')),
+        cy: parseFloat(el.getAttribute('cy')),
+        curX: 0,
+        curY: 0,
+        targetX: 0,
+        targetY: 0
+      });
+    }
+
+    var river = document.querySelector('.rings--river');
+    var riverCurX = 0, riverCurY = 0, riverTargetX = 0, riverTargetY = 0;
+    var animating = false;
+
+    function tick() {
+      var active = false;
+
+      // 1. 绿色圆环小范围微位移
+      for (var i = 0; i < circles.length; i++) {
+        var c = circles[i];
+        var vx = (c.targetX - c.curX) * 0.18;
+        var vy = (c.targetY - c.curY) * 0.18;
+        if (Math.abs(vx) > 0.02 || Math.abs(vy) > 0.02) {
+          c.curX += vx;
+          c.curY += vy;
+          c.el.setAttribute('transform', 'translate(' + c.curX.toFixed(2) + ',' + c.curY.toFixed(2) + ')');
+          active = true;
+        } else if (c.curX !== c.targetX || c.curY !== c.targetY) {
+          c.curX = c.targetX;
+          c.curY = c.targetY;
+          if (c.curX === 0 && c.curY === 0) {
+            c.el.removeAttribute('transform');
+          } else {
+            c.el.setAttribute('transform', 'translate(' + c.curX.toFixed(2) + ',' + c.curY.toFixed(2) + ')');
+          }
+        }
+      }
+
+      // 2. 蓝色河流整体小范围移动
+      if (river) {
+        var rvx = (riverTargetX - riverCurX) * 0.12;
+        var rvy = (riverTargetY - riverCurY) * 0.12;
+        if (Math.abs(rvx) > 0.02 || Math.abs(rvy) > 0.02) {
+          riverCurX += rvx;
+          riverCurY += rvy;
+          river.style.transform = 'translate3d(' + riverCurX.toFixed(2) + 'px,' + riverCurY.toFixed(2) + 'px,0)';
+          active = true;
+        } else if (riverCurX !== riverTargetX || riverCurY !== riverTargetY) {
+          riverCurX = riverTargetX;
+          riverCurY = riverTargetY;
+          if (riverCurX === 0 && riverCurY === 0) {
+            river.style.transform = '';
+          } else {
+            river.style.transform = 'translate3d(' + riverCurX.toFixed(2) + 'px,' + riverCurY.toFixed(2) + 'px,0)';
+          }
+        }
+      }
+
+      if (active) {
+        requestAnimationFrame(tick);
+      } else {
+        animating = false;
+      }
+    }
+
+    function wake() {
+      if (!animating) {
+        animating = true;
+        requestAnimationFrame(tick);
+      }
+    }
+
+    function onPointerMove(e) {
+      var rect = brand.getBoundingClientRect();
+      var s = Math.max(rect.width / 1550, rect.height / 860);
+      if (s <= 0) return;
+
+      var svgX = (e.clientX - rect.left) / s;
+      var svgY = 860 - (rect.bottom - e.clientY) / s;
+
+      // 绿色圆环小范围微位移（幅度直接为 0.1，平滑衰减，最大微移约 4.5px）
+      var maxDist = 450;
+      for (var i = 0; i < circles.length; i++) {
+        var c = circles[i];
+        var dx = svgX - c.cx;
+        var dy = svgY - c.cy;
+        var dist = Math.hypot(dx, dy);
+
+        if (dist > maxDist || dist < 0.5) {
+          c.targetX = 0;
+          c.targetY = 0;
+        } else {
+          // 幅度系数直接为 0.1，结合平滑距离衰减
+          var factor = 0.1 * Math.pow(1 - dist / maxDist, 1.5);
+          var pull = Math.min(4.5, dist * factor);
+          c.targetX = (dx / dist) * pull;
+          c.targetY = (dy / dist) * pull;
+        }
+      }
+
+      // 蓝色河流作为一个整体小范围移动（幅度系数 0.1，平滑衰减）
+      if (river) {
+        var relX = e.clientX - (rect.left + rect.width * 0.35);
+        var relY = e.clientY - (rect.top + rect.height * 0.65);
+        var rDist = Math.hypot(relX, relY);
+        if (rDist > 0) {
+          var rFactor = 0.1 * Math.pow(Math.max(0, 1 - rDist / 600), 1.5);
+          var rPull = Math.min(4.5, rDist * rFactor);
+          riverTargetX = (relX / rDist) * rPull;
+          riverTargetY = (relY / rDist) * rPull;
+        }
+      }
+
+      wake();
+    }
+
+    function onLeave() {
+      for (var i = 0; i < circles.length; i++) {
+        circles[i].targetX = 0;
+        circles[i].targetY = 0;
+      }
+      riverTargetX = 0;
+      riverTargetY = 0;
+      wake();
+    }
+
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    document.addEventListener('pointerleave', onLeave);
+    window.addEventListener('blur', onLeave);
+  })();
 </script>
 </body></html>`;
 }
